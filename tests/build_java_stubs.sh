@@ -37,22 +37,54 @@ public class Cocos2dxActivity {
     public static String getCurrentLanguage() { return "en"; }
 
     public static synchronized void preloadBackgroundMusic(String path) {
-        events.add("preloadMusic:" + path);
+        events.add("preload(" + path + ")");
     }
     public static synchronized void playBackgroundMusic(String path, boolean loop) {
         lastMusicPlayed = path != null ? path : "";
         musicPlaying = true;
         musicPlayCount++;
-        events.add("playMusic:" + path);
+        events.add("play(" + path + ",loop=" + loop + ")");
     }
-    public static void stopBackgroundMusic() { musicPlaying = false; }
-    public static void pauseBackgroundMusic() { musicPlaying = false; }
-    public static void resumeBackgroundMusic() { musicPlaying = true; }
-    public static void rewindBackgroundMusic() {}
-    public static boolean isBackgroundMusicPlaying() { return musicPlaying; }
+    public static synchronized void stopBackgroundMusic() {
+        musicPlaying = false;
+        events.add("stop()");
+    }
+    public static synchronized void pauseBackgroundMusic() {
+        musicPlaying = false;
+        events.add("pause()");
+    }
+    public static synchronized void resumeBackgroundMusic() {
+        musicPlaying = true;
+        events.add("resume()");
+    }
+    public static synchronized void rewindBackgroundMusic() {
+        events.add("rewind()");
+    }
+    public static synchronized boolean isBackgroundMusicPlaying() {
+        events.add("isPlaying()->" + musicPlaying);
+        return musicPlaying;
+    }
     public static float getBackgroundMusicVolume() { return musicVolume; }
-    public static void setBackgroundMusicVolume(float v) { musicVolume = v; }
-    public static void setBackgroundMusicTime(float t) {}
+    public static synchronized void setBackgroundMusicVolume(float v) {
+        musicVolume = v;
+        events.add(String.format("setVol(%.3f)", v));
+    }
+    public static synchronized void setBackgroundMusicTime(float t) {
+        events.add(String.format("setTime(%.3f)", t));
+    }
+    public static synchronized float getBackgroundMusicTime() {
+        events.add("getTime()");
+        return 1.5f;
+    }
+    public static synchronized void resumeBackgroundMusicFrom(float t) {
+        musicPlaying = true;
+        events.add(String.format("resumeFrom(%.3f)", t));
+    }
+    public static synchronized String drainEvents() {
+        String s = String.join(" -> ", events);
+        events.clear();
+        return s;
+    }
 
     public static synchronized void preloadEffect(String path) {
         effectPreloadCount++;

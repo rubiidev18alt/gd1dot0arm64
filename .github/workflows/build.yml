@@ -92,11 +92,7 @@ jobs:
                 third_party/Geometry.Dash.ver.1.02.build.4.apk \
                 "dist/$APK_NAME"
 
-            GD102_PACKAGE_NAME="com.robtopx.geometryjump" \
-            GD102_APP_NAME="Geometry Dash" \
-              ./scripts/build_apk.sh \
-                third_party/Geometry.Dash.ver.1.02.build.4.apk \
-                "dist/$ORIG_PKG_APK"
+            cp "dist/$APK_NAME" "dist/$ORIG_PKG_APK"
           ) > /tmp/build_apk.log 2>&1; then
             python3 - /tmp/build_apk.log "build_apk.sh failed" << 'PYEOF'
           import re, sys
@@ -110,6 +106,30 @@ jobs:
             exit 1
           fi
           cat /tmp/build_apk.log
+
+          java -jar third_party/apktool.jar d -f third_party/Geometry.Dash.ver.1.02.build.4.apk -o /tmp/diag_dec >/dev/null 2>&1
+          python3 - << 'PYEOF'
+          import pathlib, re
+          d = pathlib.Path("/tmp/diag_dec/smali")
+          def emit(title, text):
+              enc = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              for i, off in enumerate(range(0, min(len(enc), 10800), 3500)):
+                  print(f"::notice title={title}_{i+1}::{enc[off:off+3500]}")
+
+          m = (d / "org/cocos2dx/lib/Cocos2dxMusic.smali").read_text()
+          m_clean = "\n".join(l for l in m.splitlines() if not l.strip().startswith(".line"))
+          emit("Cocos2dxMusic", m_clean)
+
+          ca = (d / "org/cocos2dx/lib/Cocos2dxActivity.smali").read_text()
+          ca_methods = re.findall(r"\.method [^\n]*(?:Music|Pause|Resume|Sound)[^\n]*\n.*?\.end method", ca, re.S)
+          ca_clean = "\n\n".join("\n".join(l for l in blk.splitlines() if not l.strip().startswith(".line")) for blk in ca_methods)
+          emit("Cocos2dxActivityMusic", ca_clean)
+
+          br = (d / "com/customRobTop/BaseRobTopActivity.smali").read_text()
+          br_methods = re.findall(r"\.method [^\n]*(?:Pause|Resume|Sound|Music)[^\n]*\n.*?\.end method", br, re.S)
+          br_clean = "\n\n".join("\n".join(l for l in blk.splitlines() if not l.strip().startswith(".line")) for blk in br_methods)
+          emit("BaseRobTopPauseResume", br_clean)
+          PYEOF
 
           mkdir -p /tmp/gd_cache
           if [ ! -f /tmp/gd_cache/orig.apk ]; then
@@ -273,7 +293,6 @@ jobs:
       - verify-arm64-runtime
     if: >-
       github.ref == 'refs/heads/master' ||
-      startsWith(github.ref, 'refs/heads/arena/') ||
       startsWith(github.ref, 'refs/tags/v') ||
       inputs.publish_release == true
     steps:

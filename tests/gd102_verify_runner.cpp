@@ -336,13 +336,48 @@ int main(int argc, char **argv) {
     CHECK(sfx_gain > 0.05f && sfx_gain <= 1.0f,
           "Expected valid (0.05, 1.0] SFX gain across JNI varargs, got %.6f", sfx_gain);
 
-    // Verify Android Back key (`KEYCODE_BACK = 4`) dispatch through Cocos2d-x keypad dispatcher!
+    jmethodID mid_drain = env->GetStaticMethodID(cls_activity, "drainEvents", "()Ljava/lang/String;");
+    auto drain_music_events = [&]() -> std::string {
+        if (!mid_drain) return "";
+        auto js = (jstring)env->CallStaticObjectMethod(cls_activity, mid_drain);
+        const char *cs = js ? env->GetStringUTFChars(js, nullptr) : "";
+        std::string res = cs ? cs : "";
+        if (js && cs) env->ReleaseStringUTFChars(js, cs);
+        if (js) env->DeleteLocalRef(js);
+        return res;
+    };
+    printf("[VERIFY] Pre-pause music events: %s\n", drain_music_events().c_str());
+
+    // Advance 60 frames (~1.0s into Stereo Madness) so player x > 300, then pause (`KEYCODE_BACK = 4`)!
+    for (int i = 0; i < 60; i++) {
+        usleep(16667);
+        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    }
+    drain_music_events();
+
     jboolean back_handled = Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
     for (int i = 0; i < 15; i++) {
         usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
-    printf("[VERIFY] KEYCODE_BACK handled=%d, GL error=0x%x\n", (int)back_handled, (unsigned)glGetError());
+    printf("[VERIFY] KEYCODE_BACK (pause) handled=%d, GL error=0x%x, events=[%s]\n",
+           (int)back_handled, (unsigned)glGetError(), drain_music_events().c_str());
+
+    // Unpause via PauseLayer center Resume button (640, 360) (and fallback KEYCODE_BACK if still paused)!
+    tap(640.0f, 360.0f, 20);
+    printf("[VERIFY] Unpause (tap 640,360) events=[%s]\n", drain_music_events().c_str());
+    Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
+    for (int i = 0; i < 10; i++) {
+        usleep(16667);
+        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    }
+    printf("[VERIFY] Second KEYCODE_BACK events=[%s]\n", drain_music_events().c_str());
+    Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
+    for (int i = 0; i < 10; i++) {
+        usleep(16667);
+        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    }
+    printf("[VERIFY] Third KEYCODE_BACK events=[%s]\n", drain_music_events().c_str());
 
     // Trigger background save (`AppDelegate::applicationDidEnterBackground` -> `GManager::save`)!
     // Note: in GD 1.02 (prior to LocalLevelManager split), the two GManager files are
@@ -353,6 +388,7 @@ int main(int argc, char **argv) {
         usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
+    printf("[VERIFY] Lifecycle pause/resume events=[%s]\n", drain_music_events().c_str());
 
     size_t gm_sz = file_size_or_zero(data_dir + "/CCGameManager.dat");
     size_t gs_sz = file_size_or_zero(data_dir + "/CCGameStore.dat");
