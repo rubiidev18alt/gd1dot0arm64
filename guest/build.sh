@@ -115,10 +115,10 @@ if [ -n "${NDK:-}" ] && [ -d "${NDK:-}" ]; then
         $UNDEF "$BUILTINS" \
         -o "$OUT_SO"
 elif command -v arm-linux-gnueabi-gcc >/dev/null 2>&1; then
-    LIBGCC="$(arm-linux-gnueabi-gcc -march=armv7-a -marm -mfloat-abi=softfp -mfpu=vfpv3-d16 -print-libgcc-file-name)"
+    LIBGCC="$(arm-linux-gnueabi-gcc -march=armv7-a -marm -mfloat-abi=soft -print-libgcc-file-name)"
     BUILTINS="$TMP_BUILD/libgcc-export.a"
     promote_archive_visibility "$LIBGCC" "$BUILTINS"
-    arm-linux-gnueabi-gcc "${COMMON_DEFS[@]}" -march=armv7-a -mfloat-abi=softfp -mfpu=vfpv3-d16 -w \
+    arm-linux-gnueabi-gcc "${COMMON_DEFS[@]}" -march=armv7-a -mfloat-abi=soft -w \
         -shared -nostdlib -Wl,-soname,libguestrt.so -Wl,-Bsymbolic \
         -Wl,--hash-style=both -Wl,-z,norelro \
         "$HERE/rt_string.c" "$HERE/rt_stdio.c" "$HERE/rt_malloc.c" "$HERE/rt_asm.S" \

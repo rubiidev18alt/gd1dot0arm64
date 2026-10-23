@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: CC0-1.0 */
 @ setjmp/longjmp for the guest. Saves r4-r11, sp, lr and d8-d15.
     .syntax unified
+    .arch armv7-a
+    .fpu vfpv3-d16
     .arm
     .text
 

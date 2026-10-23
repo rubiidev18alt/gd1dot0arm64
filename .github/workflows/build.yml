@@ -154,17 +154,28 @@ jobs:
       - name: Build & run real ARM64 headless GLES2 + JVM verification suite
         run: |
           set -euo pipefail
-          ./scripts/fetch_deps.sh
-
-          # Verify standalone GNU ARM32 guest runtime build works cleanly too
-          ./guest/build.sh /tmp/test_gnu_libguestrt.so
-
-          # Extract exact ARM32 binaries shipped inside the rebuilt APK
-          rm -rf /tmp/apk_arm32 /tmp/gd102_verify_data
-          mkdir -p /tmp/apk_arm32 /tmp/gd102_verify_data
-          unzip -q -j dist/GeometryDash-1.02-arm64-android16.apk \
-            "assets/arm32/libguestrt.so" "assets/arm32/libgame.so" \
-            -d /tmp/apk_arm32
+          if ! (
+            set -euo pipefail
+            ./scripts/fetch_deps.sh
+            ./guest/build.sh /tmp/test_gnu_libguestrt.so
+            rm -rf /tmp/apk_arm32 /tmp/gd102_verify_data
+            mkdir -p /tmp/apk_arm32 /tmp/gd102_verify_data
+            unzip -q -j dist/GeometryDash-1.02-arm64-android16.apk \
+              "assets/arm32/libguestrt.so" "assets/arm32/libgame.so" \
+              -d /tmp/apk_arm32
+            ./tests/build_java_stubs.sh /tmp/headless_stubs.jar
+          ) > /tmp/verify_prep.log 2>&1; then
+            python3 - /tmp/verify_prep.log "ARM64 prep failed" << 'PYEOF'
+          import sys
+          raw = open(sys.argv[1], errors="replace").read().splitlines()
+          txt = "\n".join(raw[-80:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          PYEOF
+            cat /tmp/verify_prep.log
+            exit 1
+          fi
+          cat /tmp/verify_prep.log
 
           # Build Linux ARM64 host bridge + gd102_verify_runner
           if ! cmake -S host -B /tmp/build_verify -G Ninja \
@@ -183,7 +194,6 @@ jobs:
             exit 1
           fi
 
-          ./tests/build_java_stubs.sh /tmp/headless_stubs.jar
           LIBJVM="$(find "$JAVA_HOME" -name libjvm.so | head -n 1)"
 
           export LIBGL_ALWAYS_SOFTWARE=1

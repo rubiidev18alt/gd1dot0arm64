@@ -460,3 +460,18 @@ EXPORT unsigned long long __gnu_uldivmod_helper(unsigned long long a, unsigned l
 }
 EXPORT int __aeabi_idiv0(int r) { return r; }
 EXPORT long long __aeabi_ldiv0(long long r) { return r; }
+
+// ---- ARM RTABI (IHI 0043D §4.3.4) memory helpers ----
+// Note: __aeabi_memset* take (dest, n, c), NOT (dest, c, n)!
+EXPORT void __aeabi_memcpy(void *d, const void *s, size_t n) { memcpy(d, s, n); }
+EXPORT void __aeabi_memcpy4(void *d, const void *s, size_t n) { memcpy(d, s, n); }
+EXPORT void __aeabi_memcpy8(void *d, const void *s, size_t n) { memcpy(d, s, n); }
+EXPORT void __aeabi_memmove(void *d, const void *s, size_t n) { memmove(d, s, n); }
+EXPORT void __aeabi_memmove4(void *d, const void *s, size_t n) { memmove(d, s, n); }
+EXPORT void __aeabi_memmove8(void *d, const void *s, size_t n) { memmove(d, s, n); }
+EXPORT void __aeabi_memset(void *d, size_t n, int c) { memset(d, c, n); }
+EXPORT void __aeabi_memset4(void *d, size_t n, int c) { memset(d, c, n); }
+EXPORT void __aeabi_memset8(void *d, size_t n, int c) { memset(d, c, n); }
+EXPORT void __aeabi_memclr(void *d, size_t n) { memset(d, 0, n); }
+EXPORT void __aeabi_memclr4(void *d, size_t n) { memset(d, 0, n); }
+EXPORT void __aeabi_memclr8(void *d, size_t n) { memset(d, 0, n); }

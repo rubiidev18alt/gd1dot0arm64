@@ -43,7 +43,7 @@ target_include_directories(game PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${TP}/misc
 )
-target_compile_options(game PRIVATE -Wall -Wno-unused-function -fexceptions -fvisibility=hidden)
+target_compile_options(game PRIVATE -Wall -Wno-unused-function -fexceptions)
 target_link_options(game PRIVATE
     -Wl,--gc-sections
     -Wl,-z,max-page-size=16384
@@ -51,6 +51,7 @@ target_link_options(game PRIVATE
 )
 
 if(ANDROID)
+    target_compile_options(game PRIVATE -fvisibility=hidden)
     target_link_libraries(game PRIVATE dynarmic log android EGL GLESv2 z)
 else()
     find_package(JNI REQUIRED)
