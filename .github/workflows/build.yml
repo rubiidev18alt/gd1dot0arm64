@@ -107,28 +107,34 @@ jobs:
           fi
           cat /tmp/build_apk.log
 
-          java -jar third_party/apktool.jar d -f third_party/Geometry.Dash.ver.1.02.build.4.apk -o /tmp/diag_dec >/dev/null 2>&1
+          java -jar third_party/apktool.jar d -f third_party/Geometry.Dash.ver.1.02.build.4.apk -o /tmp/diag_dec >/dev/null 2>&1 || true
           python3 - << 'PYEOF'
-          import pathlib, re
-          d = pathlib.Path("/tmp/diag_dec/smali")
-          def emit(title, text):
-              enc = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-              for i, off in enumerate(range(0, min(len(enc), 10800), 3500)):
-                  print(f"::notice title={title}_{i+1}::{enc[off:off+3500]}")
+          import pathlib, re, traceback
+          try:
+              d = pathlib.Path("/tmp/diag_dec/smali")
+              def emit(title, text):
+                  enc = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+                  for i, off in enumerate(range(0, min(len(enc), 10800), 3500)):
+                      print(f"::notice title={title}_{i+1}::{enc[off:off+3500]}")
 
-          m = (d / "org/cocos2dx/lib/Cocos2dxMusic.smali").read_text()
-          m_clean = "\n".join(l for l in m.splitlines() if not l.strip().startswith(".line"))
-          emit("Cocos2dxMusic", m_clean)
+              for p in sorted(d.rglob("*Music*.smali")):
+                  m_clean = "\n".join(l for l in p.read_text().splitlines() if not l.strip().startswith(".line"))
+                  emit(p.stem, m_clean)
 
-          ca = (d / "org/cocos2dx/lib/Cocos2dxActivity.smali").read_text()
-          ca_methods = re.findall(r"\.method [^\n]*(?:Music|Pause|Resume|Sound)[^\n]*\n.*?\.end method", ca, re.S)
-          ca_clean = "\n\n".join("\n".join(l for l in blk.splitlines() if not l.strip().startswith(".line")) for blk in ca_methods)
-          emit("Cocos2dxActivityMusic", ca_clean)
-
-          br = (d / "com/customRobTop/BaseRobTopActivity.smali").read_text()
-          br_methods = re.findall(r"\.method [^\n]*(?:Pause|Resume|Sound|Music)[^\n]*\n.*?\.end method", br, re.S)
-          br_clean = "\n\n".join("\n".join(l for l in blk.splitlines() if not l.strip().startswith(".line")) for blk in br_methods)
-          emit("BaseRobTopPauseResume", br_clean)
+              for rel, tag in [
+                  ("org/cocos2dx/lib/Cocos2dxActivity.smali", "Cocos2dxActivityMusic"),
+                  ("org/cocos2dx/lib/Cocos2dxHelper.smali", "Cocos2dxHelperMusic"),
+                  ("com/customRobTop/BaseRobTopActivity.smali", "BaseRobTopPauseResume"),
+                  ("com/robtopx/geometryjump/GeometryJump.smali", "GeometryJumpOrig"),
+              ]:
+                  fp = d / rel
+                  if fp.exists():
+                      tx = fp.read_text()
+                      ms = re.findall(r"\.method [^\n]*(?:Music|Pause|Resume|Sound|Time|onStart|onStop)[^\n]*\n.*?\.end method", tx, re.S)
+                      cl = "\n\n".join("\n".join(l for l in blk.splitlines() if not l.strip().startswith(".line")) for blk in ms)
+                      emit(tag, cl or tx[:2000])
+          except Exception:
+              print("::notice title=DiagErr::" + traceback.format_exc().replace("\n", "%0A"))
           PYEOF
 
           mkdir -p /tmp/gd_cache
