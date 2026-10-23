@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - 'arena/**'
-      - 'master'
-      - 'main'
   workflow_dispatch:
+
+concurrency:
+  group: gd102-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -14,12 +16,122 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect APK
+      - name: Cache original APK
+        uses: actions/cache@v4
+        with:
+          path: /tmp/apk-cache
+          key: gd-1.02-build4-orig-v1
+      - name: Inspect ELF Symbols and CustomRobTop Smali
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -fSL --retry 3 "https://archive.org/download/every-geometry-dash-version/every%20geometry%20dash%20version.zip/Geometry.Dash.ver.1.02.build.4.apk" -o /tmp/orig.apk
-          sha256sum /tmp/orig.apk
-          ls -lh /tmp/orig.apk
+          mkdir -p /tmp/apk-cache
+          if [ ! -f /tmp/apk-cache/orig.apk ]; then
+            for URL in \
+              "https://ia803202.us.archive.org/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip/Geometry.Dash.ver.1.02.build.4.apk" \
+              "https://ia903202.us.archive.org/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip/Geometry.Dash.ver.1.02.build.4.apk" \
+              "https://archive.org/download/every-geometry-dash-version/every%20geometry%20dash%20version.zip/Geometry.Dash.ver.1.02.build.4.apk"; do
+              echo "Trying $URL..."
+              if curl -fSL --connect-timeout 10 --max-time 60 "$URL" -o /tmp/apk-cache/orig.apk; then
+                break
+              fi
+            done
+          fi
+          sha256sum /tmp/apk-cache/orig.apk
+          cp /tmp/apk-cache/orig.apk /tmp/orig.apk
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils apktool python3-pyelftools
+          apktool d -f /tmp/orig.apk -o /tmp/apk_dec
+          unzip -q /tmp/orig.apk -d /tmp/apk_raw
+
+          python3 - << 'PY' > /tmp/elf_report.txt
+          import subprocess, struct
+          from elftools.elf.elffile import ELFFile
+          from elftools.elf.relocation import RelocationSection
+
+          so_path = '/tmp/apk_raw/lib/armeabi/libgame.so'
+          print("=== READELF -h -l -d -S ===")
+          print(subprocess.check_output(['readelf', '-h', '-l', '-d', '-S', '-W', so_path], text=True))
+
+          with open(so_path, 'rb') as f:
+              elf = ELFFile(f)
+              dynsym = elf.get_section_by_name('.dynsym')
+              undefs = []
+              exports_java = []
+              exports_other = []
+              for sym in dynsym.iter_symbols():
+                  st_type = sym['st_info']['type']
+                  st_bind = sym['st_info']['bind']
+                  shndx = sym['st_shndx']
+                  if shndx == 'SHN_UNDEF':
+                      if sym.name:
+                          undefs.append((sym.name, st_type, st_bind, sym['st_size']))
+                  else:
+                      if sym.name.startswith('Java_') or sym.name.startswith('JNI_'):
+                          exports_java.append((sym.name, hex(sym['st_value']), sym['st_size']))
+                      elif st_bind in ('STB_GLOBAL', 'STB_WEAK') and not sym.name.startswith('_Z'):
+                          exports_other.append((sym.name, st_type, hex(sym['st_value']), sym['st_size']))
+
+              print(f"\n=== UNDEFINED SYMBOLS ({len(undefs)}) ===")
+              for u in sorted(undefs):
+                  print(f"  UND {u[1]:10s} {u[2]:10s} size={u[3]:4d} {u[0]}")
+
+              print(f"\n=== JAVA / JNI EXPORTS ({len(exports_java)}) ===")
+              for e in sorted(exports_java):
+                  print(f"  EXP {e[1]} size={e[2]} {e[0]}")
+
+              print(f"\n=== NON-C++ GLOBAL EXPORTS ({len(exports_other)}) ===")
+              for e in sorted(exports_other)[:120]:
+                  print(f"  EXP {e[1]} {e[2]} size={e[3]} {e[0]}")
+
+              rel_types = {}
+              for sec in elf.iter_sections():
+                  if isinstance(sec, RelocationSection):
+                      c = {}
+                      for r in sec.iter_relocations():
+                          t = r['r_info_type']
+                          c[t] = c.get(t, 0) + 1
+                      rel_types[sec.name] = c
+              print(f"\n=== RELOCATION TYPES ===")
+              print(rel_types)
+
+              init_arr = elf.get_section_by_name('.init_array')
+              if init_arr:
+                  data = init_arr.data()
+                  ptrs = struct.unpack(f'<{len(data)//4}I', data)
+                  print(f"\n=== INIT_ARRAY ({len(ptrs)} entries) ===")
+                  print([hex(x) for x in ptrs[:30]])
+          PY
+
+          python3 - << 'PY' > /tmp/smali_report.txt
+          import glob, os, re
+          files = (
+              sorted(glob.glob('/tmp/apk_dec/smali/com/customRobTop/*.smali')) +
+              ['/tmp/apk_dec/smali/com/robtopx/geometryjump/GeometryJump.smali',
+               '/tmp/apk_dec/smali/org/cocos2dx/lib/Cocos2dxActivity.smali',
+               '/tmp/apk_dec/smali/org/cocos2dx/lib/Cocos2dxBitmap.smali',
+               '/tmp/apk_dec/smali/org/cocos2dx/lib/q.smali']
+          )
+          for sf in files:
+              if os.path.exists(sf):
+                  print(f"\n=== {os.path.relpath(sf, '/tmp/apk_dec/smali')} ===")
+                  print(open(sf).read())
+
+          so_bytes = open('/tmp/apk_raw/lib/armeabi/libgame.so', 'rb').read()
+          print("\n=== ALL JNI SIGNATURES IN LIBGAME.SO ===")
+          for m in re.finditer(rb'\([ZBCSIJFDL\[][^\x00\n\r"\' ]{0,120}\)[VZBCSIJFDL\[]', so_bytes):
+              start = max(0, m.start() - 40)
+              end = min(len(so_bytes), m.end() + 40)
+              ctx = so_bytes[start:end]
+              parts = [p.decode('ascii', 'ignore') for p in ctx.split(b'\x00') if p]
+              print("  SIG:", " | ".join(parts))
+          PY
+
+          head -c 120000 /tmp/elf_report.txt > /tmp/e_trim.txt
+          head -c 120000 /tmp/smali_report.txt > /tmp/s_trim.txt
+          gh release create inspect-elf --draft --title "inspect-elf" --notes-file /tmp/e_trim.txt
+          gh release create inspect-smali --draft --title "inspect-smali" --notes-file /tmp/s_trim.txt
