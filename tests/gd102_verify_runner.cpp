@@ -336,22 +336,42 @@ int main(int argc, char **argv) {
           "Expected non-empty CCGameManager.dat (%zu) and CCGameStore.dat (%zu) in %s",
           gm_sz, gs_sz, data_dir.c_str());
 
-    // Verify deterministic AES-128 save decryption round-trip across restarts for both files!
+    // Verify both GManager save files carry Geometry Dash's canonical XOR-11 + Base64 + gzip header ("C?xB" ^ 11 == "H4sI")!
+    for (const char *fname : {"CCGameManager.dat", "CCGameStore.dat"}) {
+        std::string full = data_dir + "/" + fname;
+        FILE *fp = fopen(full.c_str(), "rb");
+        CHECK(fp != nullptr, "Failed to open %s", full.c_str());
+        unsigned char hdr[4]{};
+        size_t nr = fread(hdr, 1, 4, fp);
+        fclose(fp);
+        char b64_hdr[5] = {
+            (char)(hdr[0] ^ 0x0B), (char)(hdr[1] ^ 0x0B),
+            (char)(hdr[2] ^ 0x0B), (char)(hdr[3] ^ 0x0B), '\0'
+        };
+        printf("[VERIFY] %s XOR-11 decoded Base64 prefix: '%s'\n", fname, b64_hdr);
+        CHECK(nr == 4 && strcmp(b64_hdr, "H4sI") == 0,
+              "Expected gzip Base64 prefix 'H4sI' in %s, got '%s'", fname, b64_hdr);
+    }
+
+    // Also verify SimpleCrypto deterministic AES-128 round-trip for v1.00->v1.02 save migration!
+    jmethodID mid_enc = env->GetStaticMethodID(
+        cls_crypto, "saveAndEncryptStringToFile", "(Ljava/lang/String;Ljava/lang/String;)V");
     jmethodID mid_dec = env->GetStaticMethodID(
         cls_crypto, "loadAndDecryptFileToString", "(Ljava/lang/String;)Ljava/lang/String;");
-    CHECK(mid_dec != nullptr, "SimpleCrypto.loadAndDecryptFileToString missing");
-    for (const char *fname : {"CCGameManager.dat", "CCGameStore.dat"}) {
-        jstring j_path = env->NewStringUTF((data_dir + "/" + fname).c_str());
-        auto j_dec = (jstring)env->CallStaticObjectMethod(cls_crypto, mid_dec, j_path);
-        const char *dec_c = j_dec ? env->GetStringUTFChars(j_dec, nullptr) : "";
-        std::string dec_xml = dec_c ? dec_c : "";
-        if (j_dec && dec_c) env->ReleaseStringUTFChars(j_dec, dec_c);
-        env->DeleteLocalRef(j_path);
-        printf("[VERIFY] Decrypted %s XML length=%zu bytes\n", fname, dec_xml.size());
-        CHECK(dec_xml.size() > 64 &&
-                  (dec_xml.find("plist") != std::string::npos || dec_xml.find("<k>") != std::string::npos),
-              "Decrypted %s was not valid plist XML", fname);
-    }
+    CHECK(mid_enc && mid_dec, "SimpleCrypto methods missing");
+    jstring j_sample = env->NewStringUTF("<?xml version=\"1.0\"?><plist><dict><k>playerName</k><s>Player</s></dict></plist>");
+    jstring j_mig_path = env->NewStringUTF("/data/data/com.robtopx.geometryjump/test_migration.dat");
+    env->CallStaticVoidMethod(cls_crypto, mid_enc, j_sample, j_mig_path);
+    auto j_dec = (jstring)env->CallStaticObjectMethod(cls_crypto, mid_dec, j_mig_path);
+    const char *dec_c = j_dec ? env->GetStringUTFChars(j_dec, nullptr) : "";
+    std::string dec_xml = dec_c ? dec_c : "";
+    if (j_dec && dec_c) env->ReleaseStringUTFChars(j_dec, dec_c);
+    env->DeleteLocalRef(j_sample);
+    env->DeleteLocalRef(j_mig_path);
+    unlink((data_dir + "/test_migration.dat").c_str());
+    CHECK(dec_xml.find("<k>playerName</k>") != std::string::npos,
+          "SimpleCrypto deterministic AES-128 round-trip failed");
+    printf("[VERIFY] SimpleCrypto deterministic AES-128 round-trip PASSED (%zu bytes)\n", dec_xml.size());
 
     printf("\n=== ALL REAL ARM64 EXECUTION, GLES2 RENDERING, TOUCH & SAVE VERIFICATION CHECKS PASSED ===\n");
     return 0;

@@ -219,6 +219,28 @@ jobs:
           fi
 
           cat /tmp/verify_run.log
+
+          # Cold-restart persistence check: relaunch in a fresh OS process against the saved data_dir
+          # and verify GManager loads & inflates the existing CCGameManager.dat / CCGameStore.dat!
+          if ! /tmp/build_verify/gd102_verify_runner \
+              "$LIBJVM" \
+              /tmp/headless_stubs.jar \
+              /tmp/apk_arm32 \
+              dist/GeometryDash-1.02-arm64-android16.apk \
+              /tmp/gd102_verify_data > /tmp/verify_run2.log 2>&1 || \
+             grep -q "First time loading CCGameManager.dat" /tmp/verify_run2.log; then
+            python3 - /tmp/verify_run2.log "Cold-restart save reload failed" << 'PYEOF'
+          import sys
+          raw = open(sys.argv[1], errors="replace").read().splitlines()
+          txt = "\n".join(raw[-90:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          PYEOF
+            cat /tmp/verify_run2.log
+            exit 1
+          fi
+          echo "[VERIFY] Cold-restart save reload PASSED (existing CCGameManager.dat & CCGameStore.dat loaded cleanly)" >> /tmp/verify_run.log
+
           SUMMARY="$(grep -E '^\[VERIFY\]|^===' /tmp/verify_run.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
           echo "::notice title=ARM64 Runtime Verification::$SUMMARY"
 
