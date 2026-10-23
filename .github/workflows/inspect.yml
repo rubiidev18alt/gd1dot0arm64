@@ -1,0 +1,96 @@
+name: Inspect GD 1.02 APK
+on:
+  push:
+    branches:
+      - "arena/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Dump GD 1.02 asset & binary facts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Restore cached original Geometry Dash 1.02 APK
+        uses: actions/cache@v4
+        with:
+          path: /tmp/gd_cache
+          key: gd-1.02-build4-orig-v1
+
+      - name: Fetch APK if the cache missed
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gd_cache
+          if [ -f /tmp/gd_cache/orig.apk ]; then exit 0; fi
+          if [ -f /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk ]; then
+            cp /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk /tmp/gd_cache/orig.apk; exit 0
+          fi
+          for U in \
+            "https://ia803202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=Geometry.Dash.ver.1.02.build.4.apk" \
+            "https://ia903202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=Geometry.Dash.ver.1.02.build.4.apk" \
+            "https://archive.org/download/every-geometry-dash-version/every%20geometry%20dash%20version.zip/Geometry.Dash.ver.1.02.build.4.apk"; do
+            if curl -fsSL --max-time 300 -o /tmp/gd_cache/orig.apk "$U"; then break; fi
+          done
+          test -s /tmp/gd_cache/orig.apk
+
+      - name: Dump facts
+        run: |
+          set -uo pipefail
+          APK=/tmp/gd_cache/orig.apk
+          echo "APK size: $(stat -c%s "$APK")"
+          rm -rf /tmp/apkx && mkdir -p /tmp/apkx && cd /tmp/apkx && unzip -q "$APK"
+          echo "=== top-level ==="
+          ls -la /tmp/apkx
+          echo "=== assets (all) ==="
+          find /tmp/apkx/assets -type f -printf '%s\t%p\n' 2>/dev/null | sort -k2 | sed 's|/tmp/apkx/||'
+          echo "=== lib ==="
+          find /tmp/apkx/lib -type f -printf '%s\t%p\n' 2>/dev/null
+          echo "=== assets/GJ_GameSheet.plist frames (portal-related) ==="
+          python3 - <<'PY'
+          import plistlib, pathlib, re
+          p = pathlib.Path("/tmp/apkx/assets/GJ_GameSheet.plist")
+          if p.is_file():
+              d = plistlib.loads(p.read_bytes())
+              frames = sorted((d.get("frames") or {}).keys())
+              print("frame_count", len(frames))
+              print("portals", [f for f in frames if "portal" in f])
+              print("mirror", [f for f in frames if "mirror" in f.lower()])
+              print("all_frames", frames)
+          else:
+              print("GJ_GameSheet.plist missing")
+          PY
+          echo "=== libgame.so string survey ==="
+          SO=/tmp/apkx/lib/armeabi/libgame.so
+          for PAT in "portal_" "mirror" "LevelData" "Time Machine" "Stereo Madness" "Jumper" "kS1," "LevelSelect" "achieve" "Cocos2dxBitmap"; do
+            printf '%-16s %s\n' "$PAT" "$(strings -a "$SO" | grep -ic -- "$PAT")"
+          done
+          echo "--- portal_ strings ---"
+          strings -a "$SO" | grep -i "portal" | sort -u | head -40
+          echo "--- level names ---"
+          strings -a "$SO" | grep -iE "stereo madness|back on track|polargeist|dry out|base after base|can.t let go|^jumper$|time machine" | sort -u | head -20
+
+      - name: Publish digest annotations
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## GD 1.02 APK digest"
+            APK=/tmp/gd_cache/orig.apk
+            echo "- size: $(stat -c%s "$APK" 2>/dev/null || echo 0) bytes"
+            echo "- assets: $(find /tmp/apkx/assets -type f 2>/dev/null | wc -l) files"
+            echo "- LevelData.plist present: $([ -f /tmp/apkx/assets/LevelData.plist ] && echo yes || echo no)"
+          } > /tmp/digest.md
+          {
+            echo "ASSETLIST"
+            find /tmp/apkx/assets -type f -printf '%s %p\n' 2>/dev/null | sed 's|/tmp/apkx/||' | head -120
+          } >> /tmp/digest.md
+          python3 - <<'PY'
+          import pathlib
+          raw = pathlib.Path("/tmp/digest.md").read_text(errors="replace")
+          txt = raw.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for idx, start in enumerate(range(0, len(txt), 3500)):
+              print(f"::notice title=GD102 digest {idx+1}::{txt[start:start+3500]}")
+          PY
