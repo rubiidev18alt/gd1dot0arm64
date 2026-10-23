@@ -1,0 +1,25 @@
+name: Inspect and Build GD 1.02 ARM64
+
+on:
+  push:
+    branches:
+      - 'arena/**'
+      - 'master'
+      - 'main'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fSL --retry 3 "https://archive.org/download/every-geometry-dash-version/every%20geometry%20dash%20version.zip/Geometry.Dash.ver.1.02.build.4.apk" -o /tmp/orig.apk
+          sha256sum /tmp/orig.apk
+          ls -lh /tmp/orig.apk
