@@ -536,6 +536,164 @@ def patch_cocos2dx_bitmap_and_renderer(smali_root: pathlib.Path) -> None:
     pr.write_text(txtr, encoding="utf-8")
 
 
+def patch_cocos2dx_music(smali_root: pathlib.Path) -> None:
+    """
+    Replace obfuscated Cocos2dxMusic (`org/cocos2dx/lib/p.smali`) methods with
+    `ModernMusicController` so pause/unpause (`playBackgroundMusic` ->
+    `setBackgroundMusicTime` -> `resumeBackgroundMusic`) never triggers modern
+    Android NuPlayerDriver's `stop() + prepare()` seek-to-0 reset bug.
+    """
+    p = smali_root / "org/cocos2dx/lib/p.smali"
+    txt = p.read_text(encoding="utf-8")
+
+    txt = replace_method(
+        txt,
+        ".method public constructor <init>(Landroid/content/Context;)V",
+        """    .locals 0
+
+    invoke-direct {p0}, Ljava/lang/Object;-><init>()V
+
+    iput-object p1, p0, Lorg/cocos2dx/lib/p;->mContext:Landroid/content/Context;
+
+    invoke-static {p1}, Lcom/robtopx/geometryjump/ModernMusicController;->onHolderConstructed(Landroid/content/Context;)V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public preloadBackgroundMusic(Ljava/lang/String;)V",
+        """    .locals 1
+
+    iget-object v0, p0, Lorg/cocos2dx/lib/p;->mContext:Landroid/content/Context;
+
+    invoke-static {v0, p1}, Lcom/robtopx/geometryjump/ModernMusicController;->preload(Landroid/content/Context;Ljava/lang/String;)V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public playBackgroundMusic(Ljava/lang/String;Z)V",
+        """    .locals 1
+
+    iget-object v0, p0, Lorg/cocos2dx/lib/p;->mContext:Landroid/content/Context;
+
+    invoke-static {v0, p1, p2}, Lcom/robtopx/geometryjump/ModernMusicController;->play(Landroid/content/Context;Ljava/lang/String;Z)V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public stopBackgroundMusic()V",
+        """    .locals 0
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->stop()V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public pauseBackgroundMusic()V",
+        """    .locals 0
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->pause()V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public resumeBackgroundMusic()V",
+        """    .locals 0
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->resume()V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public rewindBackgroundMusic()V",
+        """    .locals 0
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->rewind()V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public setBackgroundMusicTime(F)V",
+        """    .locals 0
+
+    invoke-static {p1}, Lcom/robtopx/geometryjump/ModernMusicController;->setTime(F)V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public isBackgroundMusicPlaying()Z",
+        """    .locals 1
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->isPlaying()Z
+
+    move-result v0
+
+    return v0""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public getBackgroundVolume()F",
+        """    .locals 1
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->getVolume()F
+
+    move-result v0
+
+    return v0""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public setBackgroundVolume(F)V",
+        """    .locals 0
+
+    invoke-static {p1}, Lcom/robtopx/geometryjump/ModernMusicController;->setVolume(F)V
+
+    return-void""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public end()V",
+        """    .locals 0
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->end()V
+
+    return-void""",
+    )
+
+    if ".method public getBackgroundMusicTime()F" in txt:
+        txt = replace_method(
+            txt,
+            ".method public getBackgroundMusicTime()F",
+            """    .locals 1
+
+    invoke-static {}, Lcom/robtopx/geometryjump/ModernMusicController;->getTime()F
+
+    move-result v0
+
+    return v0""",
+        )
+
+    p.write_text(txt, encoding="utf-8")
+
+
 def patch_simple_crypto(smali_root: pathlib.Path) -> None:
     p = smali_root / "com/customRobTop/SimpleCrypto.smali"
     txt = p.read_text(encoding="utf-8")
@@ -593,6 +751,7 @@ def main() -> None:
     patch_base_robtop(smali_root)
     patch_chartboost_manager(smali_root)
     patch_cocos2dx_bitmap_and_renderer(smali_root)
+    patch_cocos2dx_music(smali_root)
     patch_simple_crypto(smali_root)
     print(
         f"Successfully patched manifest (package={args.package}, label='{args.app_name}'), "

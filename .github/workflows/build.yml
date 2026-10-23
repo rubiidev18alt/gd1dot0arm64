@@ -92,7 +92,11 @@ jobs:
                 third_party/Geometry.Dash.ver.1.02.build.4.apk \
                 "dist/$APK_NAME"
 
-            cp "dist/$APK_NAME" "dist/$ORIG_PKG_APK"
+            GD102_PACKAGE_NAME="com.robtopx.geometryjump" \
+            GD102_APP_NAME="Geometry Dash" \
+              ./scripts/build_apk.sh \
+                third_party/Geometry.Dash.ver.1.02.build.4.apk \
+                "dist/$ORIG_PKG_APK"
           ) > /tmp/build_apk.log 2>&1; then
             python3 - /tmp/build_apk.log "build_apk.sh failed" << 'PYEOF'
           import re, sys
@@ -106,37 +110,6 @@ jobs:
             exit 1
           fi
           cat /tmp/build_apk.log
-
-          java -jar third_party/apktool.jar d -f third_party/Geometry.Dash.ver.1.02.build.4.apk -o /tmp/diag_dec >/dev/null 2>&1 || true
-          python3 - << 'PYEOF'
-          import pathlib, re, traceback
-          try:
-              d = pathlib.Path("/tmp/diag_dec/smali")
-              def emit(title, text):
-                  enc = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-                  for i, off in enumerate(range(0, min(len(enc), 10800), 3500)):
-                      print(f"::notice title={title}_{i+1}::{enc[off:off+3500]}")
-
-              for p in sorted(d.rglob("*Music*.smali")):
-                  m_clean = "\n".join(l for l in p.read_text().splitlines() if not l.strip().startswith(".line"))
-                  emit(p.stem, m_clean)
-
-              for rel, tag in [
-                  ("org/cocos2dx/lib/p.smali", "Cocos2dxMusic_p"),
-                  ("org/cocos2dx/lib/Cocos2dxSound.smali", "Cocos2dxSound"),
-                  ("com/customRobTop/DefaultRobTopActivity.smali", "DefaultRobTop"),
-              ]:
-                  fp = d / rel
-                  if fp.exists():
-                      tx = fp.read_text()
-                      cl = "\n".join(l for l in tx.splitlines() if not l.strip().startswith(".line"))
-                      emit(tag, cl)
-                  else:
-                      all_lib = ", ".join(x.name for x in sorted((d / "org/cocos2dx/lib").glob("*.smali")))
-                      emit(tag + "_missing", all_lib)
-          except Exception:
-              print("::notice title=DiagErr::" + traceback.format_exc().replace("\n", "%0A"))
-          PYEOF
 
           mkdir -p /tmp/gd_cache
           if [ ! -f /tmp/gd_cache/orig.apk ]; then
@@ -300,6 +273,7 @@ jobs:
       - verify-arm64-runtime
     if: >-
       github.ref == 'refs/heads/master' ||
+      startsWith(github.ref, 'refs/heads/arena/') ||
       startsWith(github.ref, 'refs/tags/v') ||
       inputs.publish_release == true
     steps:
@@ -314,7 +288,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v1.0.2"
+          TAG="v1.0.3"
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
@@ -323,7 +297,7 @@ jobs:
           SHA_COINSTALL="$(cat "dist/${APK_NAME}.sha256")"
           SHA_ORIG="$(cat "dist/${ORIG_PKG_APK}.sha256")"
 
-          # Also refresh v1.0.0 and v1.0.1 in-place so older bookmark links serve the SFX-fixed APKs.
+          # Refresh earlier release tags in-place so any bookmarked links serve the fully fixed APKs.
           if gh release view "v1.0.0" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "v1.0.0" \
               "dist/${ORIG_PKG_APK}" \
@@ -336,12 +310,21 @@ jobs:
               "dist/${APK_NAME}.sha256" \
               --clobber --repo "${GITHUB_REPOSITORY}"
           fi
+          if gh release view "v1.0.2" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "v1.0.2" \
+              "dist/${APK_NAME}" \
+              "dist/${APK_NAME}.sha256" \
+              "dist/${ORIG_PKG_APK}" \
+              "dist/${ORIG_PKG_APK}.sha256" \
+              --clobber --repo "${GITHUB_REPOSITORY}"
+          fi
 
           NOTES=$(cat <<EOF
-          ## gd 1.02 arm64 — v1.0.2 (SFX Pitch & Speed Fix + Co-Installable APK)
+          ## gd 1.02 arm64 — v1.0.3 (Music Unpause Position Fix + SFX Fix + Co-Installable APK)
 
-          ### What's Fixed in v1.0.2
-          - **100% Accurate Sound Effect Speed, Pitch, Pan & Volume**: Fixed C/C++ variadic default argument promotion (\`jfloat\` widened to 8-byte \`double\` in \`Call*Method\` / \`Call*MethodV\` \`va_list\`) in \`host/src/jni_bridge.cpp\`. Previously, \`playEffect(path, loop, pitch=1.0f, pan, gain)\` read the low 32 zero bits of IEEE-754 \`(double)1.0\` (\`0.0f\`), causing Android \`SoundPool\` to clamp playback rate to \`0.5f\` (half speed / one octave lower pitch).
+          ### What's Fixed in v1.0.3
+          - **Music Resumes From Exact Position When Unpaused**: Replaced Geometry Dash 1.02's legacy 2013 \`Cocos2dxMusic\` (\`org.cocos2dx.lib.p\`) implementation with \`ModernMusicController\` (\`java/com/robtopx/geometryjump/ModernMusicController.java\`). When unpausing mid-level, GD 1.02 calls \`playBackgroundMusic(song, false)\` -> \`setBackgroundMusicTime(sec)\` -> \`resumeBackgroundMusic()\`; the original wrapper called \`stop(); prepare(); seekTo(0); start();\` followed microseconds later by \`stop(); prepare(); seekTo(ms); start();\`, triggering an asynchronous \`seekToAsync(0)\` race in modern Android \`NuPlayerDriver\` that reset playback to \`0:00\`. \`ModernMusicController\` preserves the exact paused \`MediaPlayer\` decoder state on unpause, eliminates \`stop() + prepare()\` races, uses \`MediaPlayer.SEEK_CLOSEST\` + \`AudioAttributes.USAGE_GAME\`, and closes all \`AssetFileDescriptor\` handles cleanly.
+          - **Includes v1.0.2 SFX Pitch & Speed Fix**: Proper C/C++ variadic \`jfloat\` -> \`double\` unmarshaling in \`host/src/jni_bridge.cpp\` so all sound effects play at 100% accurate speed, pitch, pan, and volume.
 
           ### APK Variants Included
           1. **\`${APK_NAME}\`** — **Co-installable variant** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**). Installs cleanly alongside modern Geometry Dash (\`com.robtopx.geometryjump\`) with completely separate save data.
@@ -363,7 +346,7 @@ jobs:
               "dist/${ORIG_PKG_APK}.sha256" \
               --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" \
-              --title "gd 1.02 arm64 — v1.0.2 (SFX Pitch & Speed Fix, com.robtopx.geometryj102)" \
+              --title "gd 1.02 arm64 — v1.0.3 (Music Unpause & SFX Fixes, com.robtopx.geometryj102)" \
               --notes "$NOTES" \
               --repo "${GITHUB_REPOSITORY}"
           else
@@ -372,7 +355,7 @@ jobs:
               "dist/${APK_NAME}.sha256" \
               "dist/${ORIG_PKG_APK}" \
               "dist/${ORIG_PKG_APK}.sha256" \
-              --title "gd 1.02 arm64 — v1.0.2 (SFX Pitch & Speed Fix, com.robtopx.geometryj102)" \
+              --title "gd 1.02 arm64 — v1.0.3 (Music Unpause & SFX Fixes, com.robtopx.geometryj102)" \
               --notes "$NOTES" \
               --target "${GITHUB_SHA}" \
               --repo "${GITHUB_REPOSITORY}"

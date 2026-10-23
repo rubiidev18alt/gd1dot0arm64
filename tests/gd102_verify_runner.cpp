@@ -337,9 +337,29 @@ int main(int argc, char **argv) {
     CHECK(sfx_gain > 0.05f && sfx_gain <= 1.0f,
           "Expected valid (0.05, 1.0] SFX gain across JNI varargs, got %.6f", sfx_gain);
 
-    jmethodID mid_drain = env->GetStaticMethodID(cls_activity, "drainEvents", "()Ljava/lang/String;");
+    jclass cls_mp     = env->FindClass("android/media/MediaPlayer");
+    jclass cls_afd    = env->FindClass("android/content/res/AssetFileDescriptor");
+    jclass cls_clock  = env->FindClass("android/os/SystemClock");
+    jclass cls_mctrl  = env->FindClass("com/robtopx/geometryjump/ModernMusicController");
+    CHECK(cls_mp && cls_afd && cls_clock && cls_mctrl, "Failed to find ModernMusicController / MediaPlayer stub classes");
+
+    jmethodID mid_drain      = env->GetStaticMethodID(cls_activity, "drainEvents", "()Ljava/lang/String;");
+    jmethodID mid_mp_adv     = env->GetStaticMethodID(cls_mp, "advanceClockMs", "(I)V");
+    jmethodID mid_mp_pos     = env->GetStaticMethodID(cls_mp, "activePositionMs", "()I");
+    jmethodID mid_mp_reset   = env->GetStaticMethodID(cls_mp, "resetTelemetry", "()V");
+    jmethodID mid_clk_adv    = env->GetStaticMethodID(cls_clock, "advanceUptimeMs", "(J)V");
+    jmethodID mid_mc_playing = env->GetStaticMethodID(cls_mctrl, "isPlaying", "()Z");
+    jfieldID  fid_mp_stops   = env->GetStaticFieldID(cls_mp, "stopCalls", "I");
+    jfieldID  fid_mp_seek0   = env->GetStaticFieldID(cls_mp, "seekZeroCalls", "I");
+    jfieldID  fid_mp_races   = env->GetStaticFieldID(cls_mp, "nuPlayerRaceResets", "I");
+    jfieldID  fid_mp_mode    = env->GetStaticFieldID(cls_mp, "lastSeekMode", "I");
+    jfieldID  fid_afd_open   = env->GetStaticFieldID(cls_afd, "openCount", "I");
+    jfieldID  fid_afd_close  = env->GetStaticFieldID(cls_afd, "closeCount", "I");
+    CHECK(mid_drain && mid_mp_adv && mid_mp_pos && mid_mp_reset && mid_clk_adv && mid_mc_playing &&
+          fid_mp_stops && fid_mp_seek0 && fid_mp_races && fid_mp_mode && fid_afd_open && fid_afd_close,
+          "Failed to resolve ModernMusicController / MediaPlayer telemetry members");
+
     auto drain_music_events = [&]() -> std::string {
-        if (!mid_drain) return "";
         auto js = (jstring)env->CallStaticObjectMethod(cls_activity, mid_drain);
         const char *cs = js ? env->GetStringUTFChars(js, nullptr) : "";
         std::string res = cs ? cs : "";
@@ -347,13 +367,14 @@ int main(int argc, char **argv) {
         if (js) env->DeleteLocalRef(js);
         return res;
     };
-    printf("[VERIFY] Pre-pause music events: %s\n", drain_music_events().c_str());
+    drain_music_events();
 
-    // Advance 60 frames (~1.0s into Stereo Madness) so player x > 300, then pause (`KEYCODE_BACK = 4`)!
+    // 1) Advance 60 frames (~1.18s total into StereoMadness.mp3) and pause (`KEYCODE_BACK = 4`).
     for (int i = 0; i < 60; i++) {
         usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
+    env->CallStaticVoidMethod(cls_mp, mid_mp_adv, (jint)1180);
     drain_music_events();
 
     jboolean back_handled = Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
@@ -361,21 +382,67 @@ int main(int argc, char **argv) {
         usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
-    printf("[VERIFY] KEYCODE_BACK (pause) handled=%d, GL error=0x%x, events=[%s]\n",
+    printf("[VERIFY] KEYCODE_BACK #1 (pause) handled=%d, GL error=0x%x, events=[%s]\n",
            (int)back_handled, (unsigned)glGetError(), drain_music_events().c_str());
+    CHECK(back_handled == JNI_TRUE, "Expected KEYCODE_BACK to be handled in PlayLayer");
+    CHECK(!env->CallStaticBooleanMethod(cls_mctrl, mid_mc_playing),
+          "Expected music paused after KEYCODE_BACK in PlayLayer");
 
-    // Scan center column on PauseLayer to trigger Resume button!
-    for (float ty : {360.0f, 400.0f, 440.0f, 320.0f, 280.0f, 480.0f, 520.0f, 240.0f}) {
-        tap(640.0f, ty, 20);
-        std::string ev = drain_music_events();
-        if (!ev.empty()) {
-            printf("[VERIFY] Unpause hit at (640, %.0f) -> events=[%s]\n", ty, ev.c_str());
-            break;
-        }
+    // Unpause #1 (short pause): tap PauseLayer center Resume button at (640, 400).
+    env->CallStaticVoidMethod(cls_mp, mid_mp_reset);
+    tap(640.0f, 400.0f, 20);
+    std::string unpause1_ev = drain_music_events();
+    int unpause1_pos   = env->CallStaticIntMethod(cls_mp, mid_mp_pos);
+    int unpause1_stops = env->GetStaticIntField(cls_mp, fid_mp_stops);
+    int unpause1_seek0 = env->GetStaticIntField(cls_mp, fid_mp_seek0);
+    int unpause1_races = env->GetStaticIntField(cls_mp, fid_mp_races);
+    printf("[VERIFY] Unpause #1 (short pause): pos=%d ms, stops=%d, seek0=%d, races=%d, events=[%s]\n",
+           unpause1_pos, unpause1_stops, unpause1_seek0, unpause1_races, unpause1_ev.c_str());
+    CHECK(env->CallStaticBooleanMethod(cls_mctrl, mid_mc_playing),
+          "Expected music playing after Unpause #1");
+    CHECK(unpause1_pos >= 900,
+          "Music restarted at beginning on Unpause #1! Expected >= 900 ms, got %d ms", unpause1_pos);
+    CHECK(unpause1_stops == 0 && unpause1_seek0 == 0 && unpause1_races == 0,
+          "Unexpected stop/seekTo(0)/race during Unpause #1: stops=%d seek0=%d races=%d",
+          unpause1_stops, unpause1_seek0, unpause1_races);
+
+    // 2) Play 45 more frames, pause again, simulate 15-second long pause, and unpause!
+    for (int i = 0; i < 45; i++) {
+        usleep(16667);
+        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
+    env->CallStaticVoidMethod(cls_mp, mid_mp_adv, (jint)750);
+    drain_music_events();
 
-    Java_com_customRobTop_JniToCpp_resumeSound(env, cls_base);
-    printf("[VERIFY] JniToCpp.resumeSound() events=[%s]\n", drain_music_events().c_str());
+    Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
+    for (int i = 0; i < 40; i++) {
+        usleep(16667);
+        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    }
+    drain_music_events();
+    env->CallStaticVoidMethod(cls_mp, mid_mp_reset);
+    env->CallStaticVoidMethod(cls_clock, mid_clk_adv, (jlong)15000);
+
+    tap(640.0f, 400.0f, 20);
+    std::string unpause2_ev = drain_music_events();
+    int unpause2_pos   = env->CallStaticIntMethod(cls_mp, mid_mp_pos);
+    int unpause2_seek0 = env->GetStaticIntField(cls_mp, fid_mp_seek0);
+    int unpause2_mode  = env->GetStaticIntField(cls_mp, fid_mp_mode);
+    printf("[VERIFY] Unpause #2 (15s long pause): pos=%d ms, seekMode=%d, seek0=%d, events=[%s]\n",
+           unpause2_pos, unpause2_mode, unpause2_seek0, unpause2_ev.c_str());
+    CHECK(env->CallStaticBooleanMethod(cls_mctrl, mid_mc_playing),
+          "Expected music playing after Unpause #2");
+    CHECK(unpause2_pos >= 1600,
+          "Music restarted at beginning on Unpause #2! Expected >= 1600 ms, got %d ms", unpause2_pos);
+    CHECK(unpause2_seek0 == 0 && unpause2_mode == 3,
+          "Expected SEEK_CLOSEST (3) with 0 seekTo(0) calls on Unpause #2, got mode=%d seek0=%d",
+          unpause2_mode, unpause2_seek0);
+
+    int afd_open  = env->GetStaticIntField(cls_afd, fid_afd_open);
+    int afd_close = env->GetStaticIntField(cls_afd, fid_afd_close);
+    CHECK(afd_open > 0 && afd_open == afd_close,
+          "AssetFileDescriptor leak detected: opened=%d, closed=%d", afd_open, afd_close);
+    printf("[VERIFY] AssetFileDescriptor hygiene PASSED (opened=%d, closed=%d)\n", afd_open, afd_close);
 
     // Trigger background save (`AppDelegate::applicationDidEnterBackground` -> `GManager::save`)!
     // Note: in GD 1.02 (prior to LocalLevelManager split), the two GManager files are

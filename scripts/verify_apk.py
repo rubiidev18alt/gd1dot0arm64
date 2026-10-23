@@ -131,9 +131,14 @@ def main() -> None:
         for dex in ("classes.dex", "classes2.dex"):
             if dex not in infos:
                 raise RuntimeError(f"Missing {dex} in APK")
+        dex1 = zf.read("classes.dex")
         dex2 = zf.read("classes2.dex")
         if b"Lcom/robtopx/geometryjump/ModernPlatformHelper;" not in dex2:
             raise RuntimeError("ModernPlatformHelper class missing from classes2.dex")
+        if b"Lcom/robtopx/geometryjump/ModernMusicController;" not in dex2:
+            raise RuntimeError("ModernMusicController class missing from classes2.dex")
+        if b"Lcom/robtopx/geometryjump/ModernMusicController;" not in dex1:
+            raise RuntimeError("org/cocos2dx/lib/p -> ModernMusicController delegation missing from classes.dex")
 
         # 3. Embedded ARM32 guest runtime + unmodified original GD 1.02 libgame.so
         for guest_so in ("assets/arm32/libguestrt.so", "assets/arm32/libgame.so"):

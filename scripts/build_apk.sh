@@ -87,15 +87,15 @@ LLVM_STRIP="$(ls -1 "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-stri
 cp "$WORK/cmake_host/libgame.so" "$WORK/libgame_arm64.so"
 "$LLVM_STRIP" --strip-unneeded "$WORK/libgame_arm64.so"
 
-# 5. Compile ModernPlatformHelper.java -> classes2.dex
-echo "==> Compiling ModernPlatformHelper.java -> classes2.dex"
+# 5. Compile ModernPlatformHelper.java & ModernMusicController.java -> classes2.dex
+echo "==> Compiling ModernPlatformHelper & ModernMusicController -> classes2.dex"
 mkdir -p "$WORK/javac_classes" "$WORK/dex"
 javac --release 11 -Xlint:-options -classpath "$ANDROID_JAR" \
     -d "$WORK/javac_classes" \
-    "$ROOT/java/com/robtopx/geometryjump/ModernPlatformHelper.java"
+    "$ROOT/java/com/robtopx/geometryjump/"*.java
 "$BUILD_TOOLS/d8" --min-api 24 --lib "$ANDROID_JAR" \
     --output "$WORK/dex" \
-    "$WORK/javac_classes/com/robtopx/geometryjump/ModernPlatformHelper.class"
+    "$WORK/javac_classes/com/robtopx/geometryjump/"*.class
 
 # 6. Decode original APK, relocate original ARM32 libgame.so to assets/arm32/, patch manifest & smali
 echo "==> Decoding original APK via Apktool"

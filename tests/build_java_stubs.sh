@@ -1,19 +1,306 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Compiles minimal standard-JVM JNI target classes into headless_stubs.jar so
-# `gd102_verify_runner` can run Geometry Dash 1.02 against a real OpenJDK JavaVM
-# and Mesa headless OpenGL ES 2.0 on Linux ARM64 without needing Android framework jars.
+# Compiles minimal standard-JVM JNI target classes + the REAL production
+# `ModernMusicController.java` into headless_stubs.jar so `gd102_verify_runner`
+# exercises Geometry Dash 1.02's exact pause/unpause audio state machine against
+# a real OpenJDK JavaVM and Mesa headless OpenGL ES 2.0 on Linux ARM64.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_JAR="${1:?usage: build_java_stubs.sh <out.jar>}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-mkdir -p "$TMP/src/org/cocos2dx/lib" "$TMP/src/com/customRobTop" "$TMP/classes"
+mkdir -p \
+    "$TMP/src/android/content/res" \
+    "$TMP/src/android/media" \
+    "$TMP/src/android/os" \
+    "$TMP/src/android/util" \
+    "$TMP/src/org/cocos2dx/lib" \
+    "$TMP/src/com/customRobTop" \
+    "$TMP/classes"
+
+cat > "$TMP/src/android/content/Context.java" << 'EOF'
+package android.content;
+
+import android.content.res.AssetManager;
+
+public class Context {
+    public static final Context INSTANCE = new Context();
+    private final AssetManager assets = new AssetManager();
+
+    public Context getApplicationContext() { return this; }
+    public AssetManager getAssets() { return assets; }
+}
+EOF
+
+cat > "$TMP/src/android/content/res/AssetFileDescriptor.java" << 'EOF'
+package android.content.res;
+
+import java.io.Closeable;
+import java.io.FileDescriptor;
+
+public class AssetFileDescriptor implements Closeable {
+    public static volatile int openCount = 0;
+    public static volatile int closeCount = 0;
+    private final String assetPath;
+    private boolean closed = false;
+
+    public AssetFileDescriptor(String assetPath) {
+        this.assetPath = assetPath;
+        openCount++;
+    }
+
+    public FileDescriptor getFileDescriptor() { return new FileDescriptor(); }
+    public long getStartOffset() { return 0L; }
+    public long getLength() { return 4_000_000L; }
+    public String getAssetPath() { return assetPath; }
+
+    @Override
+    public void close() {
+        if (!closed) {
+            closed = true;
+            closeCount++;
+        }
+    }
+}
+EOF
+
+cat > "$TMP/src/android/content/res/AssetManager.java" << 'EOF'
+package android.content.res;
+
+public class AssetManager {
+    public AssetFileDescriptor openFd(String fileName) {
+        return new AssetFileDescriptor(fileName);
+    }
+}
+EOF
+
+cat > "$TMP/src/android/media/AudioAttributes.java" << 'EOF'
+package android.media;
+
+public final class AudioAttributes {
+    public static final int USAGE_MEDIA = 1;
+    public static final int USAGE_GAME = 14;
+    public static final int CONTENT_TYPE_MUSIC = 2;
+
+    public final int usage;
+    public final int contentType;
+
+    private AudioAttributes(int usage, int contentType) {
+        this.usage = usage;
+        this.contentType = contentType;
+    }
+
+    public static final class Builder {
+        private int usage = USAGE_MEDIA;
+        private int contentType = CONTENT_TYPE_MUSIC;
+
+        public Builder setUsage(int u) { this.usage = u; return this; }
+        public Builder setContentType(int c) { this.contentType = c; return this; }
+        public AudioAttributes build() { return new AudioAttributes(usage, contentType); }
+    }
+}
+EOF
+
+cat > "$TMP/src/android/media/MediaPlayer.java" << 'EOF'
+package android.media;
+
+import java.io.FileDescriptor;
+
+/**
+ * Stateful MediaPlayer test double modeling Android 10-16 NuPlayerDriver:
+ * - Tracks simulated playback position via {@link #advanceClockMs(int)}.
+ * - Reproduces NuPlayerDriver's async `seekTo(0)` + `stop()/prepare()` race:
+ *   if `stop()` + `prepare()` is called while a `seekTo(0)` is pending from
+ *   the same turn, position snaps back to 0 and increments {@link #nuPlayerRaceResets}.
+ */
+public class MediaPlayer {
+    public static final int SEEK_PREVIOUS_SYNC = 0;
+    public static final int SEEK_CLOSEST = 3;
+
+    public static volatile MediaPlayer latestInstance = null;
+    public static volatile int stopCalls = 0;
+    public static volatile int seekZeroCalls = 0;
+    public static volatile int seekNonZeroCalls = 0;
+    public static volatile int lastSeekTargetMs = -1;
+    public static volatile int lastSeekMode = -1;
+    public static volatile int nuPlayerRaceResets = 0;
+
+    private boolean prepared = false;
+    private boolean playing = false;
+    private boolean stopped = false;
+    private boolean released = false;
+    private boolean looping = false;
+    private boolean pendingAsyncZeroSeek = false;
+    private int positionMs = 0;
+    private int durationMs = 120_000;
+    private float leftVol = 1.0f;
+    private float rightVol = 1.0f;
+
+    public MediaPlayer() {
+        latestInstance = this;
+    }
+
+    public static synchronized void resetTelemetry() {
+        stopCalls = 0;
+        seekZeroCalls = 0;
+        seekNonZeroCalls = 0;
+        lastSeekTargetMs = -1;
+        lastSeekMode = -1;
+        nuPlayerRaceResets = 0;
+    }
+
+    public static synchronized void advanceClockMs(int deltaMs) {
+        MediaPlayer mp = latestInstance;
+        if (mp != null && !mp.released && mp.playing && deltaMs > 0) {
+            mp.positionMs += deltaMs;
+            if (mp.positionMs >= mp.durationMs) {
+                mp.positionMs = mp.looping ? (mp.positionMs % mp.durationMs) : mp.durationMs;
+            }
+            mp.pendingAsyncZeroSeek = false;
+        }
+    }
+
+    public static synchronized int activePositionMs() {
+        MediaPlayer mp = latestInstance;
+        return (mp != null && !mp.released) ? mp.positionMs : -1;
+    }
+
+    public void setAudioAttributes(AudioAttributes attrs) {}
+    public void setDataSource(String path) {}
+    public void setDataSource(FileDescriptor fd, long offset, long length) {}
+
+    public synchronized void prepare() {
+        if (released) throw new IllegalStateException("released");
+        if (stopped && pendingAsyncZeroSeek) {
+            // Exact Android NuPlayerDriver::prepare_l(STATE_STOPPED) + pending kWhatSeek(0) race!
+            nuPlayerRaceResets++;
+            positionMs = 0;
+        } else if (stopped) {
+            positionMs = 0;
+        }
+        prepared = true;
+        stopped = false;
+    }
+
+    public synchronized void start() {
+        if (released || !prepared || stopped) throw new IllegalStateException("not prepared");
+        playing = true;
+    }
+
+    public synchronized void pause() {
+        if (released) throw new IllegalStateException("released");
+        playing = false;
+    }
+
+    public synchronized void stop() {
+        stopCalls++;
+        playing = false;
+        stopped = true;
+    }
+
+    public synchronized void release() {
+        playing = false;
+        prepared = false;
+        released = true;
+    }
+
+    public synchronized void seekTo(int msec) {
+        seekTo((long) msec, SEEK_PREVIOUS_SYNC);
+    }
+
+    public synchronized void seekTo(long msec, int mode) {
+        if (released || !prepared || stopped) throw new IllegalStateException("bad state for seekTo");
+        int target = (int) Math.max(0L, msec);
+        lastSeekTargetMs = target;
+        lastSeekMode = mode;
+        if (target == 0) {
+            seekZeroCalls++;
+            pendingAsyncZeroSeek = true;
+            positionMs = 0;
+        } else {
+            seekNonZeroCalls++;
+            if (nuPlayerRaceResets > 0) {
+                positionMs = 0;
+            } else {
+                positionMs = target;
+            }
+        }
+    }
+
+    public synchronized int getCurrentPosition() { return positionMs; }
+    public synchronized int getDuration() { return durationMs; }
+    public synchronized boolean isPlaying() { return !released && playing; }
+    public synchronized void setLooping(boolean loop) { this.looping = loop; }
+    public synchronized void setVolume(float left, float right) {
+        this.leftVol = left;
+        this.rightVol = right;
+    }
+}
+EOF
+
+cat > "$TMP/src/android/os/Build.java" << 'EOF'
+package android.os;
+
+public final class Build {
+    public static final class VERSION {
+        public static final int SDK_INT = 36;
+    }
+    public static final class VERSION_CODES {
+        public static final int LOLLIPOP = 21;
+        public static final int O = 26;
+    }
+}
+EOF
+
+cat > "$TMP/src/android/os/Looper.java" << 'EOF'
+package android.os;
+
+public final class Looper {
+    public static Looper getMainLooper() { return null; }
+}
+EOF
+
+cat > "$TMP/src/android/os/Handler.java" << 'EOF'
+package android.os;
+
+public class Handler {
+    public Handler(Looper looper) {}
+    public boolean postDelayed(Runnable r, long delayMillis) { return false; }
+}
+EOF
+
+cat > "$TMP/src/android/os/SystemClock.java" << 'EOF'
+package android.os;
+
+public final class SystemClock {
+    private static volatile long extraMs = 0L;
+    public static void advanceUptimeMs(long deltaMs) { extraMs += deltaMs; }
+    public static long uptimeMillis() {
+        return (System.nanoTime() / 1_000_000L) + extraMs;
+    }
+}
+EOF
+
+cat > "$TMP/src/android/util/Log.java" << 'EOF'
+package android.util;
+
+public final class Log {
+    public static int d(String tag, String msg) { return 0; }
+    public static int i(String tag, String msg) { return 0; }
+    public static int w(String tag, String msg) { return 0; }
+    public static int w(String tag, String msg, Throwable tr) { return 0; }
+    public static int e(String tag, String msg) { return 0; }
+    public static int e(String tag, String msg, Throwable tr) { return 0; }
+}
+EOF
 
 cat > "$TMP/src/org/cocos2dx/lib/Cocos2dxActivity.java" << 'EOF'
 package org.cocos2dx.lib;
 
+import android.content.Context;
+import com.robtopx.geometryjump.ModernMusicController;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -26,10 +313,12 @@ public class Cocos2dxActivity {
     public static volatile float lastEffectPitch = -1.0f;
     public static volatile float lastEffectPan = -999.0f;
     public static volatile float lastEffectGain = -1.0f;
-    public static float musicVolume = 1.0f;
     public static float effectsVolume = 1.0f;
-    public static boolean musicPlaying = false;
     public static final List<String> events = new ArrayList<>();
+
+    static {
+        ModernMusicController.init(Context.INSTANCE);
+    }
 
     public static native void nativeSetPaths(String apkPath);
 
@@ -38,47 +327,50 @@ public class Cocos2dxActivity {
 
     public static synchronized void preloadBackgroundMusic(String path) {
         events.add("preload(" + path + ")");
+        ModernMusicController.preload(Context.INSTANCE, path);
     }
     public static synchronized void playBackgroundMusic(String path, boolean loop) {
         lastMusicPlayed = path != null ? path : "";
-        musicPlaying = true;
         musicPlayCount++;
         events.add("play(" + path + ",loop=" + loop + ")");
+        ModernMusicController.play(Context.INSTANCE, path, loop);
     }
     public static synchronized void stopBackgroundMusic() {
-        musicPlaying = false;
         events.add("stop()");
+        ModernMusicController.stop();
     }
     public static synchronized void pauseBackgroundMusic() {
-        musicPlaying = false;
         events.add("pause()");
+        ModernMusicController.pause();
     }
     public static synchronized void resumeBackgroundMusic() {
-        musicPlaying = true;
         events.add("resume()");
+        ModernMusicController.resume();
     }
     public static synchronized void rewindBackgroundMusic() {
         events.add("rewind()");
+        ModernMusicController.rewind();
     }
     public static synchronized boolean isBackgroundMusicPlaying() {
-        events.add("isPlaying()->" + musicPlaying);
-        return musicPlaying;
+        boolean playing = ModernMusicController.isPlaying();
+        events.add("isPlaying()->" + playing);
+        return playing;
     }
-    public static float getBackgroundMusicVolume() { return musicVolume; }
+    public static synchronized float getBackgroundMusicVolume() {
+        return ModernMusicController.getVolume();
+    }
     public static synchronized void setBackgroundMusicVolume(float v) {
-        musicVolume = v;
         events.add(String.format("setVol(%.3f)", v));
+        ModernMusicController.setVolume(v);
     }
     public static synchronized void setBackgroundMusicTime(float t) {
         events.add(String.format("setTime(%.3f)", t));
+        ModernMusicController.setTime(t);
     }
     public static synchronized float getBackgroundMusicTime() {
-        events.add("getTime()");
-        return 1.5f;
-    }
-    public static synchronized void resumeBackgroundMusicFrom(float t) {
-        musicPlaying = true;
-        events.add(String.format("resumeFrom(%.3f)", t));
+        float t = ModernMusicController.getTime();
+        events.add(String.format("getTime()->%.3f", t));
+        return t;
     }
     public static synchronized String drainEvents() {
         String s = String.join(" -> ", events);
@@ -110,7 +402,7 @@ public class Cocos2dxActivity {
     public static void enableAccelerometer() {}
     public static void disableAccelerometer() {}
     public static void showMessageBox(String title, String message) {}
-    public static void end() {}
+    public static void end() { ModernMusicController.end(); }
     public static void terminateProcess() {}
 }
 EOF
@@ -336,6 +628,12 @@ public class SimpleCrypto {
 EOF
 
 javac --release 11 -d "$TMP/classes" \
+    "$TMP/src/android/content/"*.java \
+    "$TMP/src/android/content/res/"*.java \
+    "$TMP/src/android/media/"*.java \
+    "$TMP/src/android/os/"*.java \
+    "$TMP/src/android/util/"*.java \
+    "$ROOT/java/com/robtopx/geometryjump/ModernMusicController.java" \
     "$TMP/src/org/cocos2dx/lib/"*.java \
     "$TMP/src/com/customRobTop/"*.java
 

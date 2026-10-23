@@ -71,6 +71,7 @@ public final class ModernPlatformHelper {
         if (pkg != null && !pkg.isEmpty()) {
             sPkgDataPrefix = "/data/data/" + pkg;
         }
+        ModernMusicController.init(app);
         nativeBridgeInit(app, app.getAssets(), apkPath, dataDir);
         applyImmersive(activity);
     }
