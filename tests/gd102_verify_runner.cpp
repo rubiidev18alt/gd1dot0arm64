@@ -33,6 +33,7 @@ JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnPause(JNIE
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnResume(JNIEnv *, jclass);
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesBegin(JNIEnv *, jclass, jint, jfloat, jfloat);
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesEnd(JNIEnv *, jclass, jint, jfloat, jfloat);
+JNIEXPORT jboolean JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(JNIEnv *, jclass, jint);
 }
 
 #define CHECK(cond, ...)                                                       \
@@ -298,7 +299,7 @@ int main(int argc, char **argv) {
            select_stats.non_black, select_stats.unique_buckets, (unsigned long long)select_stats.fnv_hash);
     CHECK(select_stats.fnv_hash != menu_stats.fnv_hash, "Touch input at (640, 360) did not change rendered scene!");
 
-    tap(640.0f, 360.0f, 60);  // LevelSelectLayer -> PlayLayer (Stereo Madness)!
+    tap(640.0f, 260.0f, 60);  // LevelSelectLayer Stereo Madness card -> PlayLayer!
     auto j_music2 = (jstring)env->GetStaticObjectField(cls_activity, fid_music);
     const char *music2_c = j_music2 ? env->GetStringUTFChars(j_music2, nullptr) : "";
     std::string level_music = music2_c ? music2_c : "";
@@ -310,7 +311,17 @@ int main(int argc, char **argv) {
     CHECK(play_stats.non_black > 200000, "PlayLayer framebuffer blank");
     CHECK(glGetError() == GL_NO_ERROR, "OpenGL ES error during gameplay");
 
+    // Verify Android Back key (`KEYCODE_BACK = 4`) dispatch through Cocos2d-x keypad dispatcher!
+    jboolean back_handled = Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
+    for (int i = 0; i < 15; i++) {
+        usleep(16667);
+        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    }
+    printf("[VERIFY] KEYCODE_BACK handled=%d, GL error=0x%x\n", (int)back_handled, (unsigned)glGetError());
+
     // Trigger background save (`AppDelegate::applicationDidEnterBackground` -> `GManager::save`)!
+    // Note: in GD 1.02 (prior to LocalLevelManager split), the two GManager files are
+    // `CCGameManager.dat` (player progress + local levels) and `CCGameStore.dat` (store state).
     Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnPause(env, cls_renderer);
     Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnResume(env, cls_renderer);
     for (int i = 0; i < 5; i++) {
@@ -319,23 +330,28 @@ int main(int argc, char **argv) {
     }
 
     size_t gm_sz = file_size_or_zero(data_dir + "/CCGameManager.dat");
-    size_t ll_sz = file_size_or_zero(data_dir + "/CCLocalLevels.dat");
-    printf("[VERIFY] Save files written: CCGameManager.dat=%zu bytes, CCLocalLevels.dat=%zu bytes\n", gm_sz, ll_sz);
-    CHECK(gm_sz > 32 && ll_sz > 16, "Expected non-empty CCGameManager.dat and CCLocalLevels.dat in %s", data_dir.c_str());
+    size_t gs_sz = file_size_or_zero(data_dir + "/CCGameStore.dat");
+    printf("[VERIFY] Save files written: CCGameManager.dat=%zu bytes, CCGameStore.dat=%zu bytes\n", gm_sz, gs_sz);
+    CHECK(gm_sz > 100000 && gs_sz > 32,
+          "Expected non-empty CCGameManager.dat (%zu) and CCGameStore.dat (%zu) in %s",
+          gm_sz, gs_sz, data_dir.c_str());
 
-    // Verify deterministic AES-128 save decryption round-trip across restarts!
+    // Verify deterministic AES-128 save decryption round-trip across restarts for both files!
     jmethodID mid_dec = env->GetStaticMethodID(
         cls_crypto, "loadAndDecryptFileToString", "(Ljava/lang/String;)Ljava/lang/String;");
     CHECK(mid_dec != nullptr, "SimpleCrypto.loadAndDecryptFileToString missing");
-    jstring j_gm_path = env->NewStringUTF((data_dir + "/CCGameManager.dat").c_str());
-    auto j_dec = (jstring)env->CallStaticObjectMethod(cls_crypto, mid_dec, j_gm_path);
-    const char *dec_c = j_dec ? env->GetStringUTFChars(j_dec, nullptr) : "";
-    std::string dec_xml = dec_c ? dec_c : "";
-    if (j_dec && dec_c) env->ReleaseStringUTFChars(j_dec, dec_c);
-    env->DeleteLocalRef(j_gm_path);
-    printf("[VERIFY] Decrypted CCGameManager.dat XML length=%zu bytes\n", dec_xml.size());
-    CHECK(dec_xml.size() > 64 && (dec_xml.find("plist") != std::string::npos || dec_xml.find("<k>") != std::string::npos),
-          "Decrypted CCGameManager.dat was not valid plist XML");
+    for (const char *fname : {"CCGameManager.dat", "CCGameStore.dat"}) {
+        jstring j_path = env->NewStringUTF((data_dir + "/" + fname).c_str());
+        auto j_dec = (jstring)env->CallStaticObjectMethod(cls_crypto, mid_dec, j_path);
+        const char *dec_c = j_dec ? env->GetStringUTFChars(j_dec, nullptr) : "";
+        std::string dec_xml = dec_c ? dec_c : "";
+        if (j_dec && dec_c) env->ReleaseStringUTFChars(j_dec, dec_c);
+        env->DeleteLocalRef(j_path);
+        printf("[VERIFY] Decrypted %s XML length=%zu bytes\n", fname, dec_xml.size());
+        CHECK(dec_xml.size() > 64 &&
+                  (dec_xml.find("plist") != std::string::npos || dec_xml.find("<k>") != std::string::npos),
+              "Decrypted %s was not valid plist XML", fname);
+    }
 
     printf("\n=== ALL REAL ARM64 EXECUTION, GLES2 RENDERING, TOUCH & SAVE VERIFICATION CHECKS PASSED ===\n");
     return 0;

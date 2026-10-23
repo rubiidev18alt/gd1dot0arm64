@@ -17,6 +17,7 @@ The original August 2013 release of Geometry Dash 1.02 (`versionCode=4`, `target
    - `SecurityException` in `BaseRobTopActivity.getUserID()` reading `TelephonyManager.getDeviceId()` without privileged permissions.
    - `SecurityException` in `BaseRobTopActivity.registerReceiver()` without `Context.RECEIVER_EXPORTED` on Android 14+.
    - `NoClassDefFoundError: org/apache/http/util/ByteArrayBuffer` removed from the Android bootclasspath.
+   - `BadPaddingException` / complete save-data loss on every restart in `SimpleCrypto.getRawKey()`, which relied on Android 4.x Harmony `SecureRandom.getInstance("SHA1PRNG").setSeed(...)` deterministic seeding (on Android 7–16 Conscrypt, `setSeed` mixes `/dev/urandom` entropy and derives a random AES key each launch).
    - `IllegalArgumentException` in `Cocos2dxBitmap.createTextBitmap()` when creating `0x0` bitmaps for empty `CCLabelTTF` strings.
    - Android 16 predictive back gesture intercepting level-pause / editor back navigation (`enableOnBackInvokedCallback="false"`).
    - Cleartext HTTP blocked by default on API 28+ (`usesCleartextTraffic="true"`).
@@ -31,11 +32,11 @@ Instead of approximating game physics in a partial rewrite, this port executes t
 |---|---|---|
 | **ARM64 JIT & Re-Entrant CPU Core** | `host/src/cpu.{h,cpp}` | Patched [Dynarmic](https://github.com/azahar-emu/dynarmic) A32->AArch64 JIT (`ArchVersion::v8`, ARM64 `FastDispatch` inline assembly, CP15 TLS `TPIDRURO`/`TPIDRURW`, full register/VFP save & restore across nested JNI->Java->JNI callbacks). |
 | **16 KB Page-Safe 4 GiB Address Space** | `host/src/mem.cpp` | Continuous 4 GiB zero-masked guest arena (`g_base + u32`) with sub-host-page zeroing in `mem::unmap` so 4 KB guest `dlmalloc` `MMAP_CLEARS=1` invariants hold on both 4 KB and 16 KB Android 16 kernels. |
-| **ELF32 Relocator & Unwind Resolver** | `host/src/loader.{h,cpp}` | Loads `assets/arm32/libguestrt.so` and `assets/arm32/libgame.so` directly from uncompressed APK memory (`AAsset_getBuffer`), applies ARM32 relocations, exposes `PT_ARM_EXIDX` to `__gnu_Unwind_Find_exidx`, and runs all 227 C++ static constructors. |
-| **32<->64 JNI Bridge** | `host/src/jni_bridge.{h,cpp}` | Full 233-entry `JNINativeInterface` + `JavaVM` vtable translator with cached app `ClassLoader` fallback for native `pthread` workers, local-ref slot reuse, and Modified UTF-8 sanitization (4-byte emoji surrogate pairs + Latin-1 high-byte safety for ART `CheckJNI`). |
+| **ELF32 Relocator & Unwind Resolver** | `host/src/loader.{h,cpp}` | Loads `assets/arm32/libguestrt.so` and `assets/arm32/libgame.so` directly from uncompressed APK memory (`AAsset_getBuffer`), applies ARM32 relocations, exposes `PT_ARM_EXIDX` to `__gnu_Unwind_Find_exidx`, and runs all 226 C++ static constructors. |
+| **32<->64 JNI Bridge** | `host/src/jni_bridge.{h,cpp}` | Full 233-entry `JNINativeInterface` + `JavaVM` vtable translator with cached app `ClassLoader` fallback for native `pthread` workers, ART `CheckJNI` pending-exception clearing, local-ref slot reuse, and Modified UTF-8 sanitization. |
 | **Native ARM64 GLES2, Bionic & Socket Thunks** | `host/src/thunks_*.cpp` | Zero-overhead ARM64 thunks for all 69 OpenGL ES 2.0 imports (client-array vs VBO pointer tracking + surface-recreation state reset), Bionic LP32 `stat`/`dirent`/`tm`/`timeb`/`addrinfo`/`__fpclassifyd`/`arc4random`/XSI `strerror_r`, `pthread`/semaphores, and full IPv4 + IPv6/NAT64 POSIX sockets & DNS. |
 | **ARM32 Guest Runtime + `zlib` 1.3.1** | `guest/` | Self-contained ARMv7 VFPv3-D16 `libguestrt.so` providing `setjmp`/`longjmp`, EABI runtime helpers, Bionic `_ctype_`/`__sF`, `dlmalloc`, `stb_sprintf` stdio, `getopt`, `memrchr`, and full `zlib` 1.3.1 (`inflate*`, `deflate*`, `gz*`, `crc32`, `uncompress`). |
-| **Android 16 Platform Shim** | `java/.../ModernPlatformHelper.java`, `scripts/patch_manifest_and_smali.py` | Targets API 36 (`minSdkVersion=24`, `targetSdkVersion=36`) with `WindowInsetsController` edge-to-edge sticky immersive fullscreen, `DISPLAY_CUTOUT_MODE_ALWAYS`, `setPreserveEGLContextOnPause(true)`, `ANDROID_ID`-based persistent UUID, `NetworkCapabilities`, `RECEIVER_EXPORTED`, and neutralized legacy Flurry/Chartboost SDKs. |
+| **Android 16 Platform Shim** | `java/.../ModernPlatformHelper.java`, `scripts/patch_manifest_and_smali.py` | Targets API 36 (`minSdkVersion=24`, `targetSdkVersion=36`) with `WindowInsetsController` edge-to-edge sticky immersive fullscreen, `DISPLAY_CUTOUT_MODE_ALWAYS`, `setPreserveEGLContextOnPause(true)`, deterministic AES-128 atomic save persistence (`SimpleCrypto` replacement + multi-user data path virtualization), `ANDROID_ID`-based persistent UUID, `NetworkCapabilities`, `RECEIVER_EXPORTED`, and neutralized legacy Flurry/Chartboost SDKs. |
 
 ---
 
@@ -77,13 +78,13 @@ python3 scripts/verify_apk.py dist/GeometryDash-1.02-arm64-android16.apk
 `tests/gd102_verify_runner.cpp` boots a real OpenJDK `JavaVM` + Mesa headless `1280x720` OpenGL ES 2.0 Pbuffer context on Linux ARM64, loads `libguestrt.so` and unmodified `libgame.so` through the Dynarmic ARM64 JIT, and verifies:
 
 - `0` unresolved symbols across all 284 `UND` imports of `libgame.so`
-- All `227` C++ static initializers execute cleanly
+- All `226` C++ static initializers execute cleanly
 - 16 KB page-size sub-page `mem::unmap` zeroing invariant
 - `LoadingLayer` asset decompression (`zlib` + `libpng` + `.plist` + `.fnt`) -> `MenuLayer` transition (`BaseRobTopActivity.loadingFinished()` + `menuLoop.mp3`)
 - `1280x720` OpenGL ES 2.0 framebuffer pixel & color-bucket validation (`GL_NO_ERROR`)
 - Re-entrant JNI `Cocos2dxBitmap.createTextBitmap` -> `nativeInitBitmapDC` callbacks
-- Touch input navigation (`MenuLayer` -> `LevelSelectLayer` -> `PlayLayer` Stereo Madness)
-- Encrypted save persistence (`CCGameManager.dat` and `CCLocalLevels.dat`)
+- Touch & hardware Back key (`KEYCODE_BACK`) navigation (`MenuLayer` -> `LevelSelectLayer` -> `PlayLayer`)
+- Deterministic AES-128 encrypted save persistence & reload decryption round-trip (`CCGameManager.dat` and `CCGameStore.dat`)
 
 ---
 
