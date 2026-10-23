@@ -1,0 +1,35 @@
+# versions inside every-geometry-dash-version.zip
+entries 32 central_dir_size 3742 central_dir_offset 1359131381 comment 0
+    17856216 Geometry.Dash.ver.1.0.build.2.apk
+    17350041 Geometry.Dash.ver.1.01.build.3.apk
+    18947461 Geometry.Dash.ver.1.02.build.4.apk
+    19482603 Geometry.Dash.ver.1.1.build.5.apk
+    19565569 Geometry.Dash.ver.1.11.build.6.apk
+    21330764 Geometry.Dash.ver.1.20.build.7.apk
+    21331090 Geometry.Dash.ver.1.21.build.8.apk
+    21331632 Geometry.Dash.ver.1.22.build.9.apk
+    23023766 Geometry.Dash.ver.1.30.build.10.apk
+    24704408 Geometry.Dash.ver.1.40.build.11.apk
+    24704290 Geometry.Dash.ver.1.41.build.12.apk
+    30145114 Geometry.Dash.ver.1.50.build.13.apk
+    30149028 Geometry.Dash.ver.1.51.build.14.apk
+    33317026 Geometry.Dash.ver.1.60.build.16.apk
+    37542295 Geometry.Dash.ver.1.70.build.17.apk
+    37542668 Geometry.Dash.ver.1.71.build.18.apk
+    41396663 Geometry.Dash.ver.1.8.build.19.apk
+    41397134 Geometry.Dash.ver.1.81.build.20.apk
+    41397801 Geometry.Dash.ver.1.811.build.21.apk
+    49214582 Geometry.Dash.ver.1.90.build.22.apk
+    49214594 Geometry.Dash.ver.1.90.build.23.apk
+    49092301 Geometry.Dash.ver.1.91.build.24.apk
+    49109529 Geometry.Dash.ver.1.92.build.25.apk
+    49099899 Geometry.Dash.ver.1.93.build.26.apk
+    50047305 Geometry.Dash.ver.2.00.build.27.apk
+    49884021 Geometry.Dash.ver.2.001.build.28.apk
+    49904537 Geometry.Dash.ver.2.01.build.29.apk
+    49904533 Geometry.Dash.ver.2.011.build.30.apk
+    82431382 Geometry.Dash.ver.2.100.build.31.apk
+    88839468 Geometry.Dash.ver.2.110.build.32.apk
+    88840837 Geometry.Dash.ver.2.111.build.33.apk
+   150853767 Geometry.Dash.ver.2.2.13.build.37.apks
+# parsed 32 entries
