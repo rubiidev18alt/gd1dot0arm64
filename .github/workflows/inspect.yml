@@ -6,14 +6,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   inspect:
     name: Dump GD 1.02 asset & binary facts
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
       - name: Restore cached original Geometry Dash 1.02 APK
         uses: actions/cache@v4
         with:
@@ -36,41 +41,42 @@ jobs:
           done
           test -s /tmp/gd_cache/orig.apk
 
-      - name: Dump facts
+      - name: Dump APK facts
+        run: |
+          set -euo pipefail
+          python3 scripts/dump_apk_facts.py /tmp/gd_cache/orig.apk --out tools/analysis/gd102_facts.txt
+          head -40 tools/analysis/gd102_facts.txt
+
+      - name: List versions available in the public GD archive
+        continue-on-error: true
         run: |
           set -uo pipefail
-          APK=/tmp/gd_cache/orig.apk
-          echo "APK size: $(stat -c%s "$APK")"
-          rm -rf /tmp/apkx && mkdir -p /tmp/apkx && cd /tmp/apkx && unzip -q "$APK"
-          echo "=== top-level ==="
-          ls -la /tmp/apkx
-          echo "=== assets (all) ==="
-          find /tmp/apkx/assets -type f -printf '%s\t%p\n' 2>/dev/null | sort -k2 | sed 's|/tmp/apkx/||'
-          echo "=== lib ==="
-          find /tmp/apkx/lib -type f -printf '%s\t%p\n' 2>/dev/null
-          echo "=== assets/GJ_GameSheet.plist frames (portal-related) ==="
-          python3 - <<'PY'
-          import plistlib, pathlib, re
-          p = pathlib.Path("/tmp/apkx/assets/GJ_GameSheet.plist")
-          if p.is_file():
-              d = plistlib.loads(p.read_bytes())
-              frames = sorted((d.get("frames") or {}).keys())
-              print("frame_count", len(frames))
-              print("portals", [f for f in frames if "portal" in f])
-              print("mirror", [f for f in frames if "mirror" in f.lower()])
-              print("all_frames", frames)
-          else:
-              print("GJ_GameSheet.plist missing")
+          URL="https://archive.org/download/every-geometry-dash-version/every%20geometry%20dash%20version.zip"
+          curl -fsSL -r -3145728 -o /tmp/zip_tail.bin "$URL" || { echo "range fetch failed"; exit 0; }
+          python3 - <<'PY' > tools/analysis/archive_versions.txt
+          import struct
+          blob = open("/tmp/zip_tail.bin", "rb").read()
+          idx = blob.rfind(b"PK\x05\x06")
+          print("# versions inside every-geometry-dash-version.zip")
+          if idx < 0:
+              print("no end-of-central-directory record in tail")
+              raise SystemExit(0)
+          _sig, disk, cd_disk, n_disk, n_total, cd_size, cd_off, clen = struct.unpack_from("<IHHHHIIH", blob, idx)
+          print(f"entries {n_total} central_dir_size {cd_size} central_dir_offset {cd_off} comment {clen}")
+          pos = idx - cd_size
+          found = 0
+          while pos >= 0 and pos + 46 <= len(blob):
+              if blob[pos:pos+4] != b"PK\x01\x02":
+                  break
+              (ver, cver, flags, method, mtime, mdate, crc, csize, usize, nlen, elen, clen2,
+               dstart, iattr, eattr, lho) = struct.unpack_from("<HHHHHHIIIHHHHHII", blob, pos + 4)
+              name = blob[pos+46:pos+46+nlen].decode("utf-8", "replace")
+              print(f"{usize:>12} {name}")
+              found += 1
+              pos += 46 + nlen + elen + clen2
+          print(f"# parsed {found} entries")
           PY
-          echo "=== libgame.so string survey ==="
-          SO=/tmp/apkx/lib/armeabi/libgame.so
-          for PAT in "portal_" "mirror" "LevelData" "Time Machine" "Stereo Madness" "Jumper" "kS1," "LevelSelect" "achieve" "Cocos2dxBitmap"; do
-            printf '%-16s %s\n' "$PAT" "$(strings -a "$SO" | grep -ic -- "$PAT")"
-          done
-          echo "--- portal_ strings ---"
-          strings -a "$SO" | grep -i "portal" | sort -u | head -40
-          echo "--- level names ---"
-          strings -a "$SO" | grep -iE "stereo madness|back on track|polargeist|dry out|base after base|can.t let go|^jumper$|time machine" | sort -u | head -20
+          cat tools/analysis/archive_versions.txt
 
       - name: Decode framework smali (for the text-layout port)
         continue-on-error: true
@@ -81,69 +87,19 @@ jobs:
           sudo apt-get install -y -qq openjdk-17-jre-headless >/dev/null 2>&1 || true
           curl -fsSL --retry 2 -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar || exit 0
           java -jar /tmp/apktool.jar d -f -q -o /tmp/decoded /tmp/gd_cache/orig.apk || exit 0
-          mkdir -p "$GITHUB_WORKSPACE/tools/analysis/smali"
+          mkdir -p tools/analysis/smali
           for F in Cocos2dxBitmap Cocos2dxRenderer Cocos2dxHelper; do
             SRC="$(find /tmp/decoded -name "$F.smali" -print -quit)"
-            if [ -n "$SRC" ]; then cp "$SRC" "$GITHUB_WORKSPACE/tools/analysis/smali/"; fi
+            if [ -n "$SRC" ]; then cp "$SRC" tools/analysis/smali/; fi
           done
-          ls -la "$GITHUB_WORKSPACE/tools/analysis/smali" || true
+          ls -la tools/analysis/smali || true
 
-      - name: Commit facts file
+      - name: Commit facts
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          mkdir -p tools/analysis
-          OUT=tools/analysis/gd102_facts.txt
-          SO=/tmp/apkx/lib/armeabi/libgame.so
-          {
-            echo "# GD 1.02 build 4 APK facts (generated)";
-            echo "apk_sha256 $(sha256sum /tmp/gd_cache/orig.apk | cut -d' ' -f1)";
-            echo "apk_size $(stat -c%s /tmp/gd_cache/orig.apk)";
-            echo;
-            echo "## assets";
-            find /tmp/apkx/assets -type f -printf '%s %p\n' | sed 's|/tmp/apkx/||' | sort -k2;
-            echo;
-            echo "## lib";
-            find /tmp/apkx/lib -type f -printf '%s %p\n' | sed 's|/tmp/apkx/||';
-            echo;
-            echo "## objectDefinitions.plist";
-            cat /tmp/apkx/assets/objectDefinitions.plist;
-            echo;
-            echo "## GJ_GameSheet frames";
-            python3 - <<'PY2'
-          import plistlib, pathlib
-          p = pathlib.Path("/tmp/apkx/assets/GJ_GameSheet.plist")
-          d = plistlib.loads(p.read_bytes())
-          frames = sorted((d.get("frames") or {}).keys())
-          print("frame_count", len(frames))
-          print("\n".join(frames))
-          PY2
-            echo;
-            echo "## libgame.so strings survey";
-            for PAT in "portal_0" "portal_1" "mirror" "Mirror" "LevelData" "Time Machine" "Stereo Madness" "Jumper" "kS1," "H4sI" "Achievement" "Cocos2dxBitmap" "maxTextureSize" "GL_MAX_TEXTURE"; do
-              printf '%-18s %s\n' "$PAT" "$(strings -a "$SO" | grep -c -- "$PAT")";
-            done;
-            echo;
-            echo "## libgame.so portal-ish strings";
-            strings -a "$SO" | grep -iE "portal|mirror" | sort -u;
-            echo;
-            echo "## libgame.so level-name-ish strings";
-            strings -a "$SO" | grep -iE "stereo|polargeist|dry out|base after|let go|jumper|time machine|cycles|xstep|clutterfunk|fingerdash" | sort -u | head -40;
-            echo;
-            echo "## libgame.so symbols";
-            readelf -sW "$SO" 2>/dev/null | awk 'NR>3 && $4=="FUNC" && $7!="UND" {print $8}' | sort -u > /tmp/syms.txt;
-            echo "exported_func_count $(wc -l < /tmp/syms.txt)";
-            grep -E "PlayLayer|GameObject|Portal|LevelTools|GameLevelManager|LevelSelect|ObjectToolbox|CCLabel|CCTexture|GameToolbox" /tmp/syms.txt | head -60;
-            echo "total_dynsym $(readelf -sW "$SO" | grep -c FUNC)";
-            echo "has_cxx_demangled $(readelf -sW "$SO" | grep -c _ZN)";
-            echo;
-            echo "## libgame.so achievement strings";
-            strings -a "$SO" | grep -iE "^ach|achievement" | sort -u | head -40;
-          } > "$OUT"
-          wc -c "$OUT"
           git config user.name "gd102-inspector"
           git config user.email "gd102-inspector@users.noreply.github.com"
-          git add "$OUT" tools/analysis/smali 2>/dev/null || git add "$OUT"
-          git diff --cached --quiet && echo "no changes" && exit 0
+          git add tools/analysis
+          if git diff --cached --quiet; then echo "no changes"; exit 0; fi
           git commit -q -m "chore(analysis): record GD 1.02 APK facts [skip ci]"
-          git push
+          git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
