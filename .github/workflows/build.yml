@@ -61,8 +61,11 @@ jobs:
 
           SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           SDKMANAGER="$(find "$SDK/cmdline-tools" -name sdkmanager | sort -V | tail -n 1)"
-          if [ ! -f "$SDK/platforms/android-36/android.jar" ] || [ ! -d "$SDK/build-tools/36.0.0" ]; then
-            yes | "$SDKMANAGER" --sdk_root="$SDK" "platforms;android-36" "build-tools;36.0.0" >/dev/null || true
+          if [ ! -f "$SDK/platforms/android-36/android.jar" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$SDK" "platforms;android-36" >/dev/null || true
+          fi
+          if [ -z "$(ls -d "$SDK"/build-tools/3[5678]* 2>/dev/null || true)" ]; then
+            yes | "$SDKMANAGER" --sdk_root="$SDK" "build-tools;36.0.0" >/dev/null || true
           fi
 
       - name: Prepare original APK & build ARM64 Android 16 APK
@@ -76,7 +79,8 @@ jobs:
           if ! ./scripts/build_apk.sh \
               third_party/Geometry.Dash.ver.1.02.build.4.apk \
               dist/GeometryDash-1.02-arm64-android16.apk > /tmp/build_apk.log 2>&1; then
-            tail -n 40 /tmp/build_apk.log | while IFS= read -r line; do echo "::error::$line"; done
+            MSG="$(tail -n 60 /tmp/build_apk.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+            echo "::error title=build_apk.sh failed::$MSG"
             cat /tmp/build_apk.log
             exit 1
           fi
@@ -159,7 +163,8 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DGD102_BUILD_VERIFY_RUNNER=ON > /tmp/verify_cmake.log 2>&1 || \
              ! cmake --build /tmp/build_verify --parallel >> /tmp/verify_cmake.log 2>&1; then
-            tail -n 40 /tmp/verify_cmake.log | while IFS= read -r line; do echo "::error::$line"; done
+            MSG="$(tail -n 60 /tmp/verify_cmake.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+            echo "::error title=ARM64 CMake failed::$MSG"
             cat /tmp/verify_cmake.log
             exit 1
           fi
@@ -175,15 +180,15 @@ jobs:
               /tmp/apk_arm32 \
               dist/GeometryDash-1.02-arm64-android16.apk \
               /tmp/gd102_verify_data > /tmp/verify_run.log 2>&1; then
-            tail -n 45 /tmp/verify_run.log | while IFS= read -r line; do echo "::error::$line"; done
+            MSG="$(tail -n 60 /tmp/verify_run.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+            echo "::error title=gd102_verify_runner failed::$MSG"
             cat /tmp/verify_run.log
             exit 1
           fi
 
           cat /tmp/verify_run.log
-          grep "^\[VERIFY\]" /tmp/verify_run.log | while IFS= read -r line; do
-            echo "::notice title=ARM64 Runtime Verify::$line"
-          done
+          SUMMARY="$(grep -E '^\[VERIFY\]|^===' /tmp/verify_run.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+          echo "::notice title=ARM64 Runtime Verification::$SUMMARY"
 
   publish-release:
     name: Publish GitHub Release
