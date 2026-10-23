@@ -22,6 +22,10 @@ public class Cocos2dxActivity {
     public static volatile int musicPlayCount = 0;
     public static volatile int effectPreloadCount = 0;
     public static volatile int effectPlayCount = 0;
+    public static volatile String lastEffectPlayed = "";
+    public static volatile float lastEffectPitch = -1.0f;
+    public static volatile float lastEffectPan = -999.0f;
+    public static volatile float lastEffectGain = -1.0f;
     public static float musicVolume = 1.0f;
     public static float effectsVolume = 1.0f;
     public static boolean musicPlaying = false;
@@ -54,6 +58,10 @@ public class Cocos2dxActivity {
         effectPreloadCount++;
     }
     public static synchronized int playEffect(String path, boolean loop, float pitch, float pan, float gain) {
+        lastEffectPlayed = path != null ? path : "";
+        lastEffectPitch = pitch;
+        lastEffectPan = pan;
+        lastEffectGain = gain;
         effectPlayCount++;
         return effectPlayCount;
     }

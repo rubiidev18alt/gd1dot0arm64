@@ -138,7 +138,7 @@ struct Args {
     jobject o() { return from_guest(w()); }
 };
 
-void build_jvalues(const char *sig, std::vector<jvalue> &out, auto &&w32, auto &&w64) {
+void build_jvalues(const char *sig, std::vector<jvalue> &out, bool varargs_float_promoted, auto &&w32, auto &&w64) {
     out.clear();
     const char *p = sig;
     if (*p == '(') p++;
@@ -160,8 +160,18 @@ void build_jvalues(const char *sig, std::vector<jvalue> &out, auto &&w32, auto &
             u64 b = w64();
             memcpy(&v.d, &b, 8);
         } else if (c == 'F') {
-            u32 b = w32();
-            memcpy(&v.f, &b, 4);
+            // In C/C++ variadic calls (Call*Method `...` and Call*MethodV `va_list`),
+            // default argument promotions widen `jfloat` (`float`) to `double` (8 bytes,
+            // 8-byte aligned in ARM32 AAPCS); only Call*MethodA (`jvalue*`) stores 32-bit `jfloat`.
+            if (varargs_float_promoted) {
+                u64 b = w64();
+                double d;
+                memcpy(&d, &b, 8);
+                v.f = (jfloat)d;
+            } else {
+                u32 b = w32();
+                memcpy(&v.f, &b, 4);
+            }
         } else if (c == 'Z') {
             v.z = (jboolean)(w32() & 1);
         } else if (c == 'B') {
@@ -179,11 +189,11 @@ void build_jvalues(const char *sig, std::vector<jvalue> &out, auto &&w32, auto &
 
 void collect_args(Args &a, int style, const char *sig, std::vector<jvalue> &out) {
     if (style == 0) {
-        build_jvalues(sig, out, [&] { return a.w(); }, [&] { return a.d(); });
+        build_jvalues(sig, out, true, [&] { return a.w(); }, [&] { return a.d(); });
     } else if (style == 1) {
         u32 va = a.w();
         build_jvalues(
-            sig, out,
+            sig, out, true,
             [&] {
                 u32 v = rd<u32>(va);
                 va += 4;
@@ -198,7 +208,7 @@ void collect_args(Args &a, int style, const char *sig, std::vector<jvalue> &out)
     } else {
         u32 arr = a.w();
         int idx = 0;
-        build_jvalues(sig, out, [&] { return rd<u32>(arr + (idx++) * 8); }, [&] { return rd<u64>(arr + (idx++) * 8); });
+        build_jvalues(sig, out, false, [&] { return rd<u32>(arr + (idx++) * 8); }, [&] { return rd<u64>(arr + (idx++) * 8); });
     }
 }
 

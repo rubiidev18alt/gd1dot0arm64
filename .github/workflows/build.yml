@@ -81,13 +81,23 @@ jobs:
             cp /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk third_party/Geometry.Dash.ver.1.02.build.4.apk
           fi
 
-          export GD102_PACKAGE_NAME="com.robtopx.geometryj102"
-          export GD102_APP_NAME="gd 1.02 arm64"
           APK_NAME="gd-1.02-arm64-com.robtopx.geometryj102.apk"
+          ORIG_PKG_APK="GeometryDash-1.02-arm64-android16.apk"
 
-          if ! ./scripts/build_apk.sh \
-              third_party/Geometry.Dash.ver.1.02.build.4.apk \
-              "dist/$APK_NAME" > /tmp/build_apk.log 2>&1; then
+          if ! (
+            set -euo pipefail
+            GD102_PACKAGE_NAME="com.robtopx.geometryj102" \
+            GD102_APP_NAME="gd 1.02 arm64" \
+              ./scripts/build_apk.sh \
+                third_party/Geometry.Dash.ver.1.02.build.4.apk \
+                "dist/$APK_NAME"
+
+            GD102_PACKAGE_NAME="com.robtopx.geometryjump" \
+            GD102_APP_NAME="Geometry Dash" \
+              ./scripts/build_apk.sh \
+                third_party/Geometry.Dash.ver.1.02.build.4.apk \
+                "dist/$ORIG_PKG_APK"
+          ) > /tmp/build_apk.log 2>&1; then
             python3 - /tmp/build_apk.log "build_apk.sh failed" << 'PYEOF'
           import re, sys
           raw = open(sys.argv[1], errors="replace").read().splitlines()
@@ -106,7 +116,11 @@ jobs:
             cp third_party/Geometry.Dash.ver.1.02.build.4.apk /tmp/gd_cache/orig.apk
           fi
 
-          (cd dist && sha256sum "$APK_NAME" > "${APK_NAME}.sha256")
+          (
+            cd dist
+            sha256sum "$APK_NAME" > "${APK_NAME}.sha256"
+            sha256sum "$ORIG_PKG_APK" > "${ORIG_PKG_APK}.sha256"
+          )
           APK_SUMMARY="$(cat "dist/${APK_NAME}.sha256") ($(stat -c%s "dist/$APK_NAME") bytes)"
           echo "::notice title=Built APK::$APK_SUMMARY"
 
@@ -117,6 +131,8 @@ jobs:
           path: |
             dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
             dist/gd-1.02-arm64-com.robtopx.geometryj102.apk.sha256
+            dist/GeometryDash-1.02-arm64-android16.apk
+            dist/GeometryDash-1.02-arm64-android16.apk.sha256
           if-no-files-found: error
 
   verify-arm64-runtime:
@@ -272,25 +288,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v1.0.1"
+          TAG="v1.0.2"
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
           APK_NAME="gd-1.02-arm64-com.robtopx.geometryj102.apk"
-          SHA_LINE="$(cat "dist/${APK_NAME}.sha256")"
+          ORIG_PKG_APK="GeometryDash-1.02-arm64-android16.apk"
+          SHA_COINSTALL="$(cat "dist/${APK_NAME}.sha256")"
+          SHA_ORIG="$(cat "dist/${ORIG_PKG_APK}.sha256")"
+
+          # Also refresh v1.0.0 and v1.0.1 in-place so older bookmark links serve the SFX-fixed APKs.
+          if gh release view "v1.0.0" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "v1.0.0" \
+              "dist/${ORIG_PKG_APK}" \
+              "dist/${ORIG_PKG_APK}.sha256" \
+              --clobber --repo "${GITHUB_REPOSITORY}"
+          fi
+          if gh release view "v1.0.1" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "v1.0.1" \
+              "dist/${APK_NAME}" \
+              "dist/${APK_NAME}.sha256" \
+              --clobber --repo "${GITHUB_REPOSITORY}"
+          fi
+
           NOTES=$(cat <<EOF
-          ## gd 1.02 arm64 — Co-Installable Native ARM64 APK (\`com.robtopx.geometryj102\`)
+          ## gd 1.02 arm64 — v1.0.2 (SFX Pitch & Speed Fix + Co-Installable APK)
 
-          Side-by-side co-installable native **64-bit ARM (\`arm64-v8a\`)** port of **Geometry Dash 1.02 (build 4)** packaged under **\`com.robtopx.geometryj102\`** with app name **\`gd 1.02 arm64\`**, so it installs cleanly alongside modern Geometry Dash (\`com.robtopx.geometryjump\`) with completely separate save data!
+          ### What's Fixed in v1.0.2
+          - **100% Accurate Sound Effect Speed, Pitch, Pan & Volume**: Fixed C/C++ variadic default argument promotion (\`jfloat\` widened to 8-byte \`double\` in \`Call*Method\` / \`Call*MethodV\` \`va_list\`) in \`host/src/jni_bridge.cpp\`. Previously, \`playEffect(path, loop, pitch=1.0f, pan, gain)\` read the low 32 zero bits of IEEE-754 \`(double)1.0\` (\`0.0f\`), causing Android \`SoundPool\` to clamp playback rate to \`0.5f\` (half speed / one octave lower pitch).
 
-          - **Application Name**: \`gd 1.02 arm64\`
-          - **Package Name (\`applicationId\`)**: \`com.robtopx.geometryj102\`
-          - **Supported Devices**: Android 7.0 through **Android 16 (API 24–36)**, including **64-bit-only ARMv9 phones** (Pixel 7 / 8 / 9 / 10, Snapdragon 8 Gen 3 / 8 Elite) and **16 KB page-size kernels**.
-          - **Original Package Variant**: Need the original \`com.robtopx.geometryjump\` package ID instead? See release [\`v1.0.0\`](https://github.com/rubiidev18alt/gd1dot0arm64/releases/tag/v1.0.0).
+          ### APK Variants Included
+          1. **\`${APK_NAME}\`** — **Co-installable variant** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**). Installs cleanly alongside modern Geometry Dash (\`com.robtopx.geometryjump\`) with completely separate save data.
+          2. **\`${ORIG_PKG_APK}\`** — **Original package ID variant** (\`package="com.robtopx.geometryjump"\`, app name **\`Geometry Dash\`**).
 
-          ### SHA-256 Checksum
+          ### SHA-256 Checksums
           \`\`\`text
-          ${SHA_LINE}
+          ${SHA_COINSTALL}
+          ${SHA_ORIG}
           \`\`\`
           EOF
           )
@@ -299,16 +333,20 @@ jobs:
             gh release upload "$TAG" \
               "dist/${APK_NAME}" \
               "dist/${APK_NAME}.sha256" \
+              "dist/${ORIG_PKG_APK}" \
+              "dist/${ORIG_PKG_APK}.sha256" \
               --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" \
-              --title "gd 1.02 arm64 — Co-Installable APK (com.robtopx.geometryj102)" \
+              --title "gd 1.02 arm64 — v1.0.2 (SFX Pitch & Speed Fix, com.robtopx.geometryj102)" \
               --notes "$NOTES" \
               --repo "${GITHUB_REPOSITORY}"
           else
             gh release create "$TAG" \
               "dist/${APK_NAME}" \
               "dist/${APK_NAME}.sha256" \
-              --title "gd 1.02 arm64 — Co-Installable APK (com.robtopx.geometryj102)" \
+              "dist/${ORIG_PKG_APK}" \
+              "dist/${ORIG_PKG_APK}.sha256" \
+              --title "gd 1.02 arm64 — v1.0.2 (SFX Pitch & Speed Fix, com.robtopx.geometryj102)" \
               --notes "$NOTES" \
               --target "${GITHUB_SHA}" \
               --repo "${GITHUB_REPOSITORY}"

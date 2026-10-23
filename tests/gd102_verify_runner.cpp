@@ -311,6 +311,31 @@ int main(int argc, char **argv) {
     CHECK(play_stats.non_black > 200000, "PlayLayer framebuffer blank");
     CHECK(glGetError() == GL_NO_ERROR, "OpenGL ES error during gameplay");
 
+    // Verify variadic JNI `jfloat` (`double`-promoted) sound-effect parameters (`playEffect(String, boolean, float, float, float)`)!
+    jfieldID fid_sfx_cnt   = env->GetStaticFieldID(cls_activity, "effectPlayCount", "I");
+    jfieldID fid_sfx_name  = env->GetStaticFieldID(cls_activity, "lastEffectPlayed", "Ljava/lang/String;");
+    jfieldID fid_sfx_pitch = env->GetStaticFieldID(cls_activity, "lastEffectPitch", "F");
+    jfieldID fid_sfx_pan   = env->GetStaticFieldID(cls_activity, "lastEffectPan", "F");
+    jfieldID fid_sfx_gain  = env->GetStaticFieldID(cls_activity, "lastEffectGain", "F");
+    CHECK(fid_sfx_cnt && fid_sfx_name && fid_sfx_pitch && fid_sfx_pan && fid_sfx_gain, "Missing SFX telemetry fields");
+    int sfx_cnt     = env->GetStaticIntField(cls_activity, fid_sfx_cnt);
+    float sfx_pitch = env->GetStaticFloatField(cls_activity, fid_sfx_pitch);
+    float sfx_pan   = env->GetStaticFloatField(cls_activity, fid_sfx_pan);
+    float sfx_gain  = env->GetStaticFloatField(cls_activity, fid_sfx_gain);
+    auto j_sfx = (jstring)env->GetStaticObjectField(cls_activity, fid_sfx_name);
+    const char *sfx_c = j_sfx ? env->GetStringUTFChars(j_sfx, nullptr) : "";
+    std::string sfx_name = sfx_c ? sfx_c : "";
+    if (j_sfx && sfx_c) env->ReleaseStringUTFChars(j_sfx, sfx_c);
+    printf("[VERIFY] SFX telemetry: count=%d, last='%s', pitch=%.4f, pan=%.4f, gain=%.4f\n",
+           sfx_cnt, sfx_name.c_str(), sfx_pitch, sfx_pan, sfx_gain);
+    CHECK(sfx_cnt > 0, "Expected at least 1 sound effect played on button taps, got %d", sfx_cnt);
+    CHECK(sfx_pitch >= 0.8f && sfx_pitch <= 1.25f,
+          "Expected normal ~1.0 SFX pitch across JNI varargs, got %.6f", sfx_pitch);
+    CHECK(sfx_pan >= -1.0f && sfx_pan <= 1.0f,
+          "Expected valid [-1, 1] SFX pan across JNI varargs, got %.6f", sfx_pan);
+    CHECK(sfx_gain > 0.05f && sfx_gain <= 1.0f,
+          "Expected valid (0.05, 1.0] SFX gain across JNI varargs, got %.6f", sfx_gain);
+
     // Verify Android Back key (`KEYCODE_BACK = 4`) dispatch through Cocos2d-x keypad dispatcher!
     jboolean back_handled = Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
     for (int i = 0; i < 15; i++) {
