@@ -555,6 +555,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/publish_release.log) 2>&1
           TAG="v1.1.0"
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
@@ -562,6 +563,7 @@ jobs:
           APK_NAME="gd-1.02-arm64-com.robtopx.geometryj102.apk"
           ORIG_PKG_APK="GeometryDash-1.02-arm64-android16.apk"
           GDPS_APK="gd-1.02-gdps-com.robtopx.geomgdps102.apk"
+          GD11_APK="gd-1.1-arm64-com.robtopx.geometryj11.apk"
           SHA_COINSTALL="$(cat "dist/${APK_NAME}.sha256")"
           SHA_ORIG="$(cat "dist/${ORIG_PKG_APK}.sha256")"
           SHA_GDPS=""
@@ -635,3 +637,20 @@ jobs:
               --target "${GITHUB_SHA}" \
               --repo "${GITHUB_REPOSITORY}"
           fi
+
+      - name: Report publish log on failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          LOG=/tmp/publish_release.log
+          if [ ! -f "$LOG" ]; then
+            echo "::error title=publish log::no $LOG (the failure happened before the release step ran)"
+            exit 0
+          fi
+          python3 - "$LOG" << 'PYEOF'
+          import sys
+          lines = open(sys.argv[1], errors="replace").read().splitlines()
+          tail = "\n".join(lines[-35:])[-3200:]
+          txt = tail.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          print(f"::error title=publish_release tail::{txt}")
+          PYEOF
