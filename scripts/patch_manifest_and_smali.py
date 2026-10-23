@@ -433,6 +433,39 @@ def patch_cocos2dx_bitmap_and_renderer(smali_root: pathlib.Path) -> None:
     pr.write_text(txtr, encoding="utf-8")
 
 
+def patch_simple_crypto(smali_root: pathlib.Path) -> None:
+    p = smali_root / "com/customRobTop/SimpleCrypto.smali"
+    txt = p.read_text(encoding="utf-8")
+
+    txt = replace_method(
+        txt,
+        ".method public static loadAndDecryptFileToString(Ljava/lang/String;)Ljava/lang/String;",
+        """.method public static loadAndDecryptFileToString(Ljava/lang/String;)Ljava/lang/String;
+    .locals 1
+
+    invoke-static {p0}, Lcom/robtopx/geometryjump/ModernPlatformHelper;->loadAndDecryptSaveFile(Ljava/lang/String;)Ljava/lang/String;
+
+    move-result-object v0
+
+    return-object v0
+.end method""",
+    )
+
+    txt = replace_method(
+        txt,
+        ".method public static saveAndEncryptStringToFile(Ljava/lang/String;Ljava/lang/String;)V",
+        """.method public static saveAndEncryptStringToFile(Ljava/lang/String;Ljava/lang/String;)V
+    .locals 0
+
+    invoke-static {p0, p1}, Lcom/robtopx/geometryjump/ModernPlatformHelper;->saveAndEncryptSaveFile(Ljava/lang/String;Ljava/lang/String;)V
+
+    return-void
+.end method""",
+    )
+
+    p.write_text(txt, encoding="utf-8")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <apktool_decoded_dir>", file=sys.stderr)
@@ -448,6 +481,7 @@ def main() -> None:
     patch_base_robtop(smali_root)
     patch_chartboost_manager(smali_root)
     patch_cocos2dx_bitmap_and_renderer(smali_root)
+    patch_simple_crypto(smali_root)
     print(f"Successfully patched manifest, apktool.yml, and smali in {apk_dir}")
 
 

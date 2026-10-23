@@ -13,6 +13,7 @@
 #include <dlfcn.h>
 #include <jni.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -47,7 +48,8 @@ namespace {
 
 using CreateJavaVMFn = jint (*)(JavaVM **, void **, void *);
 
-JavaVM *boot_jvm(const std::string &libjvm_path, const std::string &stubs_jar, JNIEnv **out_env) {
+JavaVM *boot_jvm(const std::string &libjvm_path, const std::string &stubs_jar,
+                 const std::string &data_dir, JNIEnv **out_env) {
     void *dl = dlopen(libjvm_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (!dl) {
         fprintf(stderr, "dlopen(%s) failed: %s\n", libjvm_path.c_str(), dlerror());
@@ -60,13 +62,15 @@ JavaVM *boot_jvm(const std::string &libjvm_path, const std::string &stubs_jar, J
     }
 
     std::string cp_opt = "-Djava.class.path=" + stubs_jar;
-    JavaVMOption opts[2]{};
+    std::string dd_opt = "-Dgd102.data.dir=" + data_dir;
+    JavaVMOption opts[3]{};
     opts[0].optionString = const_cast<char *>(cp_opt.c_str());
-    opts[1].optionString = const_cast<char *>("-Xmx256m");
+    opts[1].optionString = const_cast<char *>(dd_opt.c_str());
+    opts[2].optionString = const_cast<char *>("-Xmx256m");
 
     JavaVMInitArgs vm_args{};
     vm_args.version = JNI_VERSION_1_6;
-    vm_args.nOptions = 2;
+    vm_args.nOptions = 3;
     vm_args.options = opts;
     vm_args.ignoreUnrecognized = JNI_TRUE;
 
@@ -201,14 +205,15 @@ int main(int argc, char **argv) {
     const std::string data_dir    = argv[5];
 
     JNIEnv *env = nullptr;
-    JavaVM *vm = boot_jvm(libjvm_path, stubs_jar, &env);
+    JavaVM *vm = boot_jvm(libjvm_path, stubs_jar, data_dir, &env);
     CHECK(vm && env, "Failed to boot OpenJDK JavaVM");
 
     jclass cls_activity = env->FindClass("org/cocos2dx/lib/Cocos2dxActivity");
     jclass cls_bitmap   = env->FindClass("org/cocos2dx/lib/Cocos2dxBitmap");
     jclass cls_renderer = env->FindClass("org/cocos2dx/lib/Cocos2dxRenderer");
     jclass cls_base     = env->FindClass("com/customRobTop/BaseRobTopActivity");
-    CHECK(cls_activity && cls_bitmap && cls_renderer && cls_base, "Failed to find stub Java classes");
+    jclass cls_crypto   = env->FindClass("com/customRobTop/SimpleCrypto");
+    CHECK(cls_activity && cls_bitmap && cls_renderer && cls_base && cls_crypto, "Failed to find stub Java classes");
 
     JNINativeMethod bm_native{
         const_cast<char *>("nativeInitBitmapDC"),
@@ -245,9 +250,10 @@ int main(int argc, char **argv) {
     jfieldID fid_bms    = env->GetStaticFieldID(cls_bitmap, "bitmapCalls", "I");
     CHECK(fid_loaded && fid_music && fid_bms, "Failed to look up telemetry fields");
 
-    // Pump frames until LoadingLayer finishes and MenuLayer renders!
+    // Pump frames at ~60 Hz so CCDirector::calculateDeltaTime() advances transitions naturally!
     bool loading_done = false;
     for (int frame = 0; frame < 90; frame++) {
+        usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
         CHECK(!env->ExceptionCheck(), "Java exception on frame %d", frame);
         if (env->GetStaticBooleanField(cls_base, fid_loaded)) {
@@ -277,14 +283,16 @@ int main(int argc, char **argv) {
     // Tap the center Play button (640, 360) -> LevelSelectLayer -> tap center (640, 360) -> Stereo Madness!
     auto tap = [&](float x, float y, int settle_frames) {
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesBegin(env, cls_renderer, 0, x, y);
+        usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesEnd(env, cls_renderer, 0, x, y);
         for (int i = 0; i < settle_frames; i++) {
+            usleep(16667);
             Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
         }
     };
 
-    tap(640.0f, 360.0f, 40);  // MenuLayer Play button -> LevelSelectLayer
+    tap(640.0f, 360.0f, 45);  // MenuLayer Play button -> LevelSelectLayer
     FrameStats select_stats = inspect_framebuffer(W, H, (data_dir + "/level_select_frame.ppm").c_str());
     printf("[VERIFY] Post-tap #1 framebuffer: non_black=%zu, buckets=%zu, hash=0x%016llx\n",
            select_stats.non_black, select_stats.unique_buckets, (unsigned long long)select_stats.fnv_hash);
@@ -305,12 +313,29 @@ int main(int argc, char **argv) {
     // Trigger background save (`AppDelegate::applicationDidEnterBackground` -> `GManager::save`)!
     Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnPause(env, cls_renderer);
     Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnResume(env, cls_renderer);
-    for (int i = 0; i < 5; i++) Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    for (int i = 0; i < 5; i++) {
+        usleep(16667);
+        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    }
 
     size_t gm_sz = file_size_or_zero(data_dir + "/CCGameManager.dat");
     size_t ll_sz = file_size_or_zero(data_dir + "/CCLocalLevels.dat");
     printf("[VERIFY] Save files written: CCGameManager.dat=%zu bytes, CCLocalLevels.dat=%zu bytes\n", gm_sz, ll_sz);
     CHECK(gm_sz > 32 && ll_sz > 16, "Expected non-empty CCGameManager.dat and CCLocalLevels.dat in %s", data_dir.c_str());
+
+    // Verify deterministic AES-128 save decryption round-trip across restarts!
+    jmethodID mid_dec = env->GetStaticMethodID(
+        cls_crypto, "loadAndDecryptFileToString", "(Ljava/lang/String;)Ljava/lang/String;");
+    CHECK(mid_dec != nullptr, "SimpleCrypto.loadAndDecryptFileToString missing");
+    jstring j_gm_path = env->NewStringUTF((data_dir + "/CCGameManager.dat").c_str());
+    auto j_dec = (jstring)env->CallStaticObjectMethod(cls_crypto, mid_dec, j_gm_path);
+    const char *dec_c = j_dec ? env->GetStringUTFChars(j_dec, nullptr) : "";
+    std::string dec_xml = dec_c ? dec_c : "";
+    if (j_dec && dec_c) env->ReleaseStringUTFChars(j_dec, dec_c);
+    env->DeleteLocalRef(j_gm_path);
+    printf("[VERIFY] Decrypted CCGameManager.dat XML length=%zu bytes\n", dec_xml.size());
+    CHECK(dec_xml.size() > 64 && (dec_xml.find("plist") != std::string::npos || dec_xml.find("<k>") != std::string::npos),
+          "Decrypted CCGameManager.dat was not valid plist XML");
 
     printf("\n=== ALL REAL ARM64 EXECUTION, GLES2 RENDERING, TOUCH & SAVE VERIFICATION CHECKS PASSED ===\n");
     return 0;

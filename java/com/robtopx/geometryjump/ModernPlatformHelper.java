@@ -22,10 +22,19 @@ import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.UUID;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 
 /**
  * Android 16 (API 36) platform compatibility & ARM64 bridge bootstrapper for Geometry Dash 1.02.
@@ -34,6 +43,10 @@ public final class ModernPlatformHelper {
     private static final String TAG = "gd102-platform";
     private static final String PREFS_NAME = "gd102_modern_prefs";
     private static final String KEY_USER_ID = "user_uuid";
+    private static final String LEGACY_DATA_PREFIX = "/data/data/com.robtopx.geometryjump";
+    private static final String SAVE_SEED = "y27vyZlpIJk2C8wd";
+
+    private static volatile String sDataDir = null;
 
     private ModernPlatformHelper() {}
 
@@ -52,8 +65,88 @@ public final class ModernPlatformHelper {
         if (dataDir == null || dataDir.isEmpty()) {
             dataDir = app.getFilesDir().getParentFile().getAbsolutePath();
         }
+        sDataDir = dataDir;
         nativeBridgeInit(app, app.getAssets(), apkPath, dataDir);
         applyImmersive(activity);
+    }
+
+    public static String resolveSavePath(String path) {
+        if (path == null) return "";
+        String dir = sDataDir;
+        if (dir != null && !dir.isEmpty() && path.startsWith(LEGACY_DATA_PREFIX)) {
+            char next = path.length() > LEGACY_DATA_PREFIX.length()
+                    ? path.charAt(LEGACY_DATA_PREFIX.length())
+                    : '/';
+            if (next == '/') {
+                return dir + path.substring(LEGACY_DATA_PREFIX.length());
+            }
+        }
+        return path;
+    }
+
+    private static SecretKeySpec deriveDeterministicSaveKey() throws Exception {
+        MessageDigest sha = MessageDigest.getInstance("SHA-256");
+        byte[] digest = sha.digest(SAVE_SEED.getBytes(StandardCharsets.UTF_8));
+        return new SecretKeySpec(Arrays.copyOf(digest, 16), "AES");
+    }
+
+    /**
+     * Replaces GD 1.02's broken `SecureRandom.getInstance("SHA1PRNG").setSeed(...)` key derivation,
+     * which on Android 7.0–16 (Conscrypt) mixes `/dev/urandom` entropy and generates a different
+     * random key on every launch (wiping player progress upon restart).
+     */
+    public static String loadAndDecryptSaveFile(String rawPath) {
+        try {
+            File file = new File(resolveSavePath(rawPath));
+            if (!file.exists() || !file.isFile()) return "";
+            byte[] cipherBytes;
+            try (FileInputStream in = new FileInputStream(file);
+                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    out.write(buf, 0, n);
+                }
+                cipherBytes = out.toByteArray();
+            }
+            if (cipherBytes.length == 0) return "";
+            Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
+            cipher.init(Cipher.DECRYPT_MODE, deriveDeterministicSaveKey());
+            byte[] plain = cipher.doFinal(cipherBytes);
+            return new String(plain, StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            Log.w(TAG, "loadAndDecryptSaveFile failed for " + rawPath, t);
+            return "";
+        }
+    }
+
+    public static void saveAndEncryptSaveFile(String plaintext, String rawPath) {
+        if (plaintext == null || rawPath == null || rawPath.isEmpty()) return;
+        try {
+            Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
+            cipher.init(Cipher.ENCRYPT_MODE, deriveDeterministicSaveKey());
+            byte[] encrypted = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
+
+            File dst = new File(resolveSavePath(rawPath));
+            File parent = dst.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            File tmp = new File(dst.getAbsolutePath() + ".tmp");
+            try (FileOutputStream out = new FileOutputStream(tmp)) {
+                out.write(encrypted);
+                out.getFD().sync();
+            }
+            if (!tmp.renameTo(dst)) {
+                try (FileOutputStream out = new FileOutputStream(dst)) {
+                    out.write(encrypted);
+                    out.getFD().sync();
+                }
+                tmp.delete();
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "saveAndEncryptSaveFile failed for " + rawPath, t);
+        }
     }
 
     @SuppressWarnings("deprecation")

@@ -119,6 +119,9 @@ cat > "$TMP/src/org/cocos2dx/lib/Cocos2dxRenderer.java" << 'EOF'
 package org.cocos2dx.lib;
 
 public class Cocos2dxRenderer {
+    public static volatile double animationInterval = 1.0 / 60.0;
+    public static void setAnimationInterval(double interval) { animationInterval = interval; }
+
     public static native void nativeInit(int w, int h);
     public static native void nativeRender();
     public static native void nativeOnPause();
@@ -209,6 +212,76 @@ public class JniToCpp {
     public static native void promoImageDownloaded();
     public static native void resumeSound();
     public static native void showInterstitialFailed();
+}
+EOF
+
+cat > "$TMP/src/com/customRobTop/SimpleCrypto.java" << 'EOF'
+package com.customRobTop;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Arrays;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+
+public class SimpleCrypto {
+    private static final String LEGACY_PREFIX = "/data/data/com.robtopx.geometryjump";
+    private static final String SEED = "y27vyZlpIJk2C8wd";
+
+    private static String resolvePath(String rawPath) {
+        if (rawPath == null) return "";
+        String dataDir = System.getProperty("gd102.data.dir", "");
+        if (!dataDir.isEmpty() && rawPath.startsWith(LEGACY_PREFIX)) {
+            return dataDir + rawPath.substring(LEGACY_PREFIX.length());
+        }
+        return rawPath;
+    }
+
+    private static SecretKeySpec key() throws Exception {
+        byte[] d = MessageDigest.getInstance("SHA-256").digest(SEED.getBytes(StandardCharsets.UTF_8));
+        return new SecretKeySpec(Arrays.copyOf(d, 16), "AES");
+    }
+
+    public static String loadAndDecryptFileToString(String rawPath) {
+        try {
+            File f = new File(resolvePath(rawPath));
+            if (!f.exists() || !f.isFile()) return "";
+            byte[] enc;
+            try (FileInputStream in = new FileInputStream(f);
+                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                enc = out.toByteArray();
+            }
+            if (enc.length == 0) return "";
+            Cipher c = Cipher.getInstance("AES/ECB/PKCS5Padding");
+            c.init(Cipher.DECRYPT_MODE, key());
+            return new String(c.doFinal(enc), StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    public static void saveAndEncryptStringToFile(String plaintext, String rawPath) {
+        if (plaintext == null || rawPath == null || rawPath.isEmpty()) return;
+        try {
+            Cipher c = Cipher.getInstance("AES/ECB/PKCS5Padding");
+            c.init(Cipher.ENCRYPT_MODE, key());
+            byte[] enc = c.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
+            File dst = new File(resolvePath(rawPath));
+            File p = dst.getParentFile();
+            if (p != null && !p.exists()) p.mkdirs();
+            try (FileOutputStream out = new FileOutputStream(dst)) {
+                out.write(enc);
+                out.getFD().sync();
+            }
+        } catch (Throwable ignored) {}
+    }
 }
 EOF
 

@@ -211,17 +211,28 @@ template <char RET, int STYLE, int KIND> void jni_call(GuestThread &t) {
     jclass cls = KIND == 1 ? (jclass)a.o() : (jclass)recv;
     const char *sig = nullptr;
     jmethodID mid = guest_to_mid(a.w(), &sig);
+    if (!mid || (KIND != 2 && !recv) || (KIND >= 1 && !cls)) {
+        if constexpr (RET == 'J' || RET == 'D') t.ret64(0);
+        else if constexpr (RET != 'V') t.ret32(0);
+        return;
+    }
     std::vector<jvalue> jv;
     collect_args(a, STYLE, sig, jv);
     const jvalue *p = jv.empty() ? nullptr : jv.data();
     JNIEnv *e = E();
+    if (e->ExceptionCheck()) e->ExceptionClear();
 
 #define DISPATCH(Type, ctype, setret)                                              \
     do {                                                                           \
-        ctype r;                                                                   \
+        ctype r{};                                                                 \
         if constexpr (KIND == 0) r = e->Call##Type##MethodA(recv, mid, p);         \
         else if constexpr (KIND == 1) r = e->CallNonvirtual##Type##MethodA(recv, cls, mid, p); \
         else r = e->CallStatic##Type##MethodA(cls, mid, p);                        \
+        if (e->ExceptionCheck()) {                                                 \
+            e->ExceptionDescribe();                                                \
+            e->ExceptionClear();                                                   \
+            r = ctype{};                                                           \
+        }                                                                          \
         setret;                                                                    \
     } while (0)
 
@@ -229,6 +240,10 @@ template <char RET, int STYLE, int KIND> void jni_call(GuestThread &t) {
         if constexpr (KIND == 0) e->CallVoidMethodA(recv, mid, p);
         else if constexpr (KIND == 1) e->CallNonvirtualVoidMethodA(recv, cls, mid, p);
         else e->CallStaticVoidMethodA(cls, mid, p);
+        if (e->ExceptionCheck()) {
+            e->ExceptionDescribe();
+            e->ExceptionClear();
+        }
     } else if constexpr (RET == 'L') {
         DISPATCH(Object, jobject, t.ret32(to_guest(r)));
     } else if constexpr (RET == 'Z') {
@@ -257,9 +272,18 @@ template <int STYLE> void jni_new_object(GuestThread &t) {
     jclass cls = (jclass)a.o();
     const char *sig = nullptr;
     jmethodID mid = guest_to_mid(a.w(), &sig);
+    if (!cls || !mid) return t.ret32(0);
     std::vector<jvalue> jv;
     collect_args(a, STYLE, sig, jv);
-    t.ret32(to_guest(E()->NewObjectA(cls, mid, jv.empty() ? nullptr : jv.data())));
+    JNIEnv *e = E();
+    if (e->ExceptionCheck()) e->ExceptionClear();
+    jobject obj = e->NewObjectA(cls, mid, jv.empty() ? nullptr : jv.data());
+    if (e->ExceptionCheck()) {
+        e->ExceptionDescribe();
+        e->ExceptionClear();
+        obj = nullptr;
+    }
+    t.ret32(to_guest(obj));
 }
 
 template <char K, bool STATIC> void jni_get_field(GuestThread &t) {
@@ -490,6 +514,7 @@ void j_FindClass(GuestThread &t) {
     const char *name = (const char *)g2h(a.w());
     if (!name) return t.ret32(0);
     JNIEnv *e = E();
+    if (e->ExceptionCheck()) e->ExceptionClear();
     jclass cls = e->FindClass(name);
     if (!cls || e->ExceptionCheck()) {
         jobject cl = nullptr;
@@ -508,6 +533,10 @@ void j_FindClass(GuestThread &t) {
             cls = (jclass)e->CallObjectMethod(cl, mid, jname);
             e->DeleteLocalRef(jname);
         }
+    }
+    if (!cls || e->ExceptionCheck()) {
+        e->ExceptionClear();
+        return t.ret32(0);
     }
     t.ret32(to_guest(cls));
 }
@@ -590,8 +619,14 @@ template <bool STATIC> void j_GetMethodID(GuestThread &t) {
     jclass c = (jclass)a.o();
     const char *name = (const char *)g2h(a.w());
     const char *sig = (const char *)g2h(a.w());
+    if (!c || !name || !sig) return t.ret32(0);
     JNIEnv *e = E();
+    if (e->ExceptionCheck()) e->ExceptionClear();
     jmethodID id = STATIC ? e->GetStaticMethodID(c, name, sig) : e->GetMethodID(c, name, sig);
+    if (!id || e->ExceptionCheck()) {
+        e->ExceptionClear();
+        return t.ret32(0);
+    }
     t.ret32(mid_to_guest(id, sig));
 }
 template <bool STATIC> void j_GetFieldID(GuestThread &t) {
@@ -599,8 +634,14 @@ template <bool STATIC> void j_GetFieldID(GuestThread &t) {
     jclass c = (jclass)a.o();
     const char *name = (const char *)g2h(a.w());
     const char *sig = (const char *)g2h(a.w());
+    if (!c || !name || !sig) return t.ret32(0);
     JNIEnv *e = E();
+    if (e->ExceptionCheck()) e->ExceptionClear();
     jfieldID id = STATIC ? e->GetStaticFieldID(c, name, sig) : e->GetFieldID(c, name, sig);
+    if (!id || e->ExceptionCheck()) {
+        e->ExceptionClear();
+        return t.ret32(0);
+    }
     t.ret32(fid_to_guest(id));
 }
 
