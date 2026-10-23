@@ -440,27 +440,23 @@ def patch_simple_crypto(smali_root: pathlib.Path) -> None:
     txt = replace_method(
         txt,
         ".method public static loadAndDecryptFileToString(Ljava/lang/String;)Ljava/lang/String;",
-        """.method public static loadAndDecryptFileToString(Ljava/lang/String;)Ljava/lang/String;
-    .locals 1
+        """    .locals 1
 
     invoke-static {p0}, Lcom/robtopx/geometryjump/ModernPlatformHelper;->loadAndDecryptSaveFile(Ljava/lang/String;)Ljava/lang/String;
 
     move-result-object v0
 
-    return-object v0
-.end method""",
+    return-object v0""",
     )
 
     txt = replace_method(
         txt,
         ".method public static saveAndEncryptStringToFile(Ljava/lang/String;Ljava/lang/String;)V",
-        """.method public static saveAndEncryptStringToFile(Ljava/lang/String;Ljava/lang/String;)V
-    .locals 0
+        """    .locals 0
 
     invoke-static {p0, p1}, Lcom/robtopx/geometryjump/ModernPlatformHelper;->saveAndEncryptSaveFile(Ljava/lang/String;Ljava/lang/String;)V
 
-    return-void
-.end method""",
+    return-void""",
     )
 
     p.write_text(txt, encoding="utf-8")
