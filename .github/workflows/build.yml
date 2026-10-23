@@ -74,13 +74,21 @@ jobs:
           mkdir -p third_party dist
           if [ -f /tmp/gd_cache/orig.apk ]; then
             cp /tmp/gd_cache/orig.apk third_party/Geometry.Dash.ver.1.02.build.4.apk
+          elif [ -f /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk ]; then
+            cp /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk third_party/Geometry.Dash.ver.1.02.build.4.apk
           fi
 
           if ! ./scripts/build_apk.sh \
               third_party/Geometry.Dash.ver.1.02.build.4.apk \
               dist/GeometryDash-1.02-arm64-android16.apk > /tmp/build_apk.log 2>&1; then
-            MSG="$(tail -n 60 /tmp/build_apk.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
-            echo "::error title=build_apk.sh failed::$MSG"
+            python3 - /tmp/build_apk.log "build_apk.sh failed" << 'PYEOF'
+          import re, sys
+          raw = open(sys.argv[1], errors="replace").read().splitlines()
+          lines = [l for l in raw if not re.match(r"^\[\d+/\d+\] Building C", l)]
+          txt = "\n".join(lines[-80:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          PYEOF
             cat /tmp/build_apk.log
             exit 1
           fi
@@ -163,8 +171,14 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DGD102_BUILD_VERIFY_RUNNER=ON > /tmp/verify_cmake.log 2>&1 || \
              ! cmake --build /tmp/build_verify --parallel >> /tmp/verify_cmake.log 2>&1; then
-            MSG="$(tail -n 60 /tmp/verify_cmake.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
-            echo "::error title=ARM64 CMake failed::$MSG"
+            python3 - /tmp/verify_cmake.log "ARM64 CMake failed" << 'PYEOF'
+          import re, sys
+          raw = open(sys.argv[1], errors="replace").read().splitlines()
+          lines = [l for l in raw if not re.match(r"^\[\d+/\d+\] Building C", l)]
+          txt = "\n".join(lines[-80:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          PYEOF
             cat /tmp/verify_cmake.log
             exit 1
           fi
@@ -180,8 +194,13 @@ jobs:
               /tmp/apk_arm32 \
               dist/GeometryDash-1.02-arm64-android16.apk \
               /tmp/gd102_verify_data > /tmp/verify_run.log 2>&1; then
-            MSG="$(tail -n 60 /tmp/verify_run.log | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
-            echo "::error title=gd102_verify_runner failed::$MSG"
+            python3 - /tmp/verify_run.log "gd102_verify_runner failed" << 'PYEOF'
+          import sys
+          raw = open(sys.argv[1], errors="replace").read().splitlines()
+          txt = "\n".join(raw[-90:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          PYEOF
             cat /tmp/verify_run.log
             exit 1
           fi
