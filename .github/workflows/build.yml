@@ -188,7 +188,7 @@ jobs:
             if [ -f third_party/Geometry.Dash.ver.1.1.build.5.apk ]; then
               mkdir -p /tmp/gd_cache11
               cp third_party/Geometry.Dash.ver.1.1.build.5.apk /tmp/gd_cache11/orig11.apk
-              echo "::notice title=GD 1.1 source::$((stat -c%s third_party/Geometry.Dash.ver.1.1.build.5.apk)) bytes sha256=$(sha256sum third_party/Geometry.Dash.ver.1.1.build.5.apk | cut -d' ' -f1)"
+              echo "::notice title=GD 1.1 source::$(stat -c%s third_party/Geometry.Dash.ver.1.1.build.5.apk) bytes sha256=$(sha256sum third_party/Geometry.Dash.ver.1.1.build.5.apk | cut -d' ' -f1)"
             fi
           fi
           if [ -f /tmp/gd_cache/orig.apk ]; then

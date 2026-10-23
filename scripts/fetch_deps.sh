@@ -27,8 +27,8 @@ APKTOOL_SHA256="56d59c524fc764263ba8d345754d8daf55b1887818b15cd3b594f555d249e2db
 ORIG_APK_SHA256="37ae0e63820572994e63421bb3b138731ac40f9e6bb1030e137e9eaf03aa68a9"
 
 # Geometry Dash 1.1 build 5, the release that introduced Time Machine and mirror portals.
-# Pinned by size until the SHA-256 has been recorded from a verified CI fetch.
-GD11_APK_SHA256="${GD11_APK_SHA256:-}"
+# SHA-256 recorded from a verified CI fetch of the archive.org copy.
+GD11_APK_SHA256="${GD11_APK_SHA256:-854f73b21bb555edc206bd89d024c931d3eca630a1e32c7c2c191182e8eaed20}"
 GD11_APK_SIZE=19482603
 GD11_APK_URLS=(
     "https://ia803202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=Geometry.Dash.ver.1.1.build.5.apk"
