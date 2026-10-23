@@ -94,7 +94,14 @@ python3 scripts/verify_apk.py dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
 
 ## Private Offline Geometry Dash 1.0 Level Server (`com.robtopx.geomgdps102`)
 
-The `v1.0.4` release adds a third, fully co-installable APK variant that ships its own
+> **Status: disabled for now.** The implementation below is complete and still builds
+> locally, but the CI job that assembles the level archive from
+> [GD History](https://history.geometrydash.eu) cannot get through Cloudflare from
+> hosted runners, so the variant is switched off in the pipeline. Set the repository
+> variable `ENABLE_GDPS_VARIANT=true` to re-enable `build-level-archive` and the third
+> APK; until then releases contain only the two official-server variants.
+
+The `v1.0.4` work adds a third, fully co-installable APK variant that ships its own
 **private, completely offline Geometry Dash 1.0 level server** inside the app:
 
 ```text

@@ -29,6 +29,12 @@ concurrency:
 jobs:
   build-level-archive:
     name: Build Private GD 1.0 Level Archive (GD History)
+    # TEMPORARILY DISABLED. GD History is behind Cloudflare, which refuses the hosted
+    # runner ranges, so this job only burns its 90-minute budget. Everything downstream
+    # keys off the produced files, so the two regular APK variants keep building,
+    # verifying and publishing while this is off. Set the repository variable
+    # ENABLE_GDPS_VARIANT=true to switch the private-server variant back on.
+    if: ${{ vars.ENABLE_GDPS_VARIANT == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -115,12 +121,15 @@ jobs:
     name: Build Android 16 ARM64 APK
     runs-on: ubuntu-24.04
     needs: build-level-archive
+    # A skipped level-archive job must not skip the regular APK build.
+    if: ${{ !cancelled() && !failure() }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Download GD 1.0 level archive
+        if: ${{ vars.ENABLE_GDPS_VARIANT == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: gd102-levels-archive
@@ -190,13 +199,17 @@ jobs:
                 third_party/Geometry.Dash.ver.1.02.build.4.apk \
                 "dist/$ORIG_PKG_APK"
 
-            GD102_PACKAGE_NAME="com.robtopx.geomgdps102" \
-            GD102_APP_NAME="gd 1.02 gdps arm64" \
-            GD102_LOCAL_GDPS=1 \
-            GD102_GDPS_DB="third_party/levels_1_0.bin" \
-              ./scripts/build_apk.sh \
-                third_party/Geometry.Dash.ver.1.02.build.4.apk \
-                "dist/$GDPS_APK"
+            if [ -f third_party/levels_1_0.bin ]; then
+              GD102_PACKAGE_NAME="com.robtopx.geomgdps102" \
+              GD102_APP_NAME="gd 1.02 gdps arm64" \
+              GD102_LOCAL_GDPS=1 \
+              GD102_GDPS_DB="third_party/levels_1_0.bin" \
+                ./scripts/build_apk.sh \
+                  third_party/Geometry.Dash.ver.1.02.build.4.apk \
+                  "dist/$GDPS_APK"
+            else
+              echo "GD 1.0 level archive absent; skipping the com.robtopx.geomgdps102 variant"
+            fi
           ) > /tmp/build_apk.log 2>&1; then
             python3 - /tmp/build_apk.log "build_apk.sh failed" << 'PYEOF'
           import re, sys
@@ -220,12 +233,16 @@ jobs:
             cd dist
             sha256sum "$APK_NAME" > "${APK_NAME}.sha256"
             sha256sum "$ORIG_PKG_APK" > "${ORIG_PKG_APK}.sha256"
-            sha256sum "$GDPS_APK" > "${GDPS_APK}.sha256"
+            if [ -f "$GDPS_APK" ]; then
+              sha256sum "$GDPS_APK" > "${GDPS_APK}.sha256"
+            fi
           )
           APK_SUMMARY="$(cat "dist/${APK_NAME}.sha256") ($(stat -c%s "dist/$APK_NAME") bytes)"
           echo "::notice title=Built APK::$APK_SUMMARY"
-          GDPS_SUMMARY="$(cat "dist/${GDPS_APK}.sha256") ($(stat -c%s "dist/$GDPS_APK") bytes, level archive $(stat -c%s third_party/levels_1_0.bin) bytes)"
-          echo "::notice title=Built GDPS APK::$GDPS_SUMMARY"
+          if [ -f "dist/${GDPS_APK}.sha256" ]; then
+            GDPS_SUMMARY="$(cat "dist/${GDPS_APK}.sha256") ($(stat -c%s "dist/$GDPS_APK") bytes, level archive $(stat -c%s third_party/levels_1_0.bin) bytes)"
+            echo "::notice title=Built GDPS APK::$GDPS_SUMMARY"
+          fi
 
       - name: Upload built ARM64 APK artifact
         uses: actions/upload-artifact@v4
@@ -293,11 +310,15 @@ jobs:
             unzip -q -j "$APK_FILE" \
               "assets/arm32/libguestrt.so" "assets/arm32/libgame.so" \
               -d /tmp/apk_arm32
-            unzip -q -j "$GDPS_APK" "assets/gdps/levels_1_0.bin" -d /tmp/apk_gdps
-            # Real ARM32 probe executed inside the Dynarmic guest (gethostbyname -> connect -> HTTP).
-            arm-linux-gnueabi-gcc -marm -march=armv7-a -mfloat-abi=soft -O2 -shared -fPIC \
-              -fno-stack-protector -fno-asynchronous-unwind-tables \
-              -o /tmp/apk_gdps/libgdps_probe.so tests/guest_gdps_probe.c
+            if [ -f "$GDPS_APK" ]; then
+              unzip -q -j "$GDPS_APK" "assets/gdps/levels_1_0.bin" -d /tmp/apk_gdps
+              # Real ARM32 probe executed inside the Dynarmic guest (gethostbyname -> connect -> HTTP).
+              arm-linux-gnueabi-gcc -marm -march=armv7-a -mfloat-abi=soft -O2 -shared -fPIC \
+                -fno-stack-protector -fno-asynchronous-unwind-tables \
+                -o /tmp/apk_gdps/libgdps_probe.so tests/guest_gdps_probe.c
+            else
+              echo "GDPS APK absent; skipping the private-server runtime checks"
+            fi
             ./tests/build_java_stubs.sh /tmp/headless_stubs.jar
           ) > /tmp/verify_prep.log 2>&1; then
             python3 - /tmp/verify_prep.log "ARM64 prep failed" << 'PYEOF'
@@ -373,31 +394,36 @@ jobs:
           fi
           echo "[VERIFY] Cold-restart save reload PASSED (existing CCGameManager.dat & CCGameStore.dat loaded cleanly)" >> /tmp/verify_run.log
 
-          # GDPS variant: boot the com.robtopx.geomgdps102 build, load the embedded 1.0 archive,
-          # exercise the private server over real sockets AND from real ARM32 guest code
-          # (gethostbyname www.boomlings.com -> connect -> HTTP POST), then re-run the full
-          # rendering / audio / save suite on that same APK.
-          if ! /tmp/build_verify/gd102_verify_runner \
-              "$LIBJVM" \
-              /tmp/headless_stubs.jar \
-              /tmp/apk_arm32 \
-              "$GDPS_APK" \
-              /tmp/gd102_verify_data_gdps \
-              /tmp/apk_gdps/levels_1_0.bin \
-              /tmp/apk_gdps/libgdps_probe.so > /tmp/verify_gdps.log 2>&1; then
-            python3 - /tmp/verify_gdps.log "GDPS ARM64 runtime verification failed" << 'PYEOF'
-          import sys
-          raw = open(sys.argv[1], errors="replace").read().splitlines()
-          txt = "\n".join(raw[-90:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
-              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          if [ -f "$GDPS_APK" ]; then
+            # GDPS variant: boot the com.robtopx.geomgdps102 build, load the embedded 1.0 archive,
+            # exercise the private server over real sockets AND from real ARM32 guest code
+            # (gethostbyname www.boomlings.com -> connect -> HTTP POST), then re-run the full
+            # rendering / audio / save suite on that same APK.
+            if ! /tmp/build_verify/gd102_verify_runner \
+                "$LIBJVM" \
+                /tmp/headless_stubs.jar \
+                /tmp/apk_arm32 \
+                "$GDPS_APK" \
+                /tmp/gd102_verify_data_gdps \
+                /tmp/apk_gdps/levels_1_0.bin \
+                /tmp/apk_gdps/libgdps_probe.so > /tmp/verify_gdps.log 2>&1; then
+              python3 - /tmp/verify_gdps.log "GDPS ARM64 runtime verification failed" << 'PYEOF'
+            import sys
+            raw = open(sys.argv[1], errors="replace").read().splitlines()
+            txt = "\n".join(raw[-90:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+            for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+                print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
           PYEOF
-            cat /tmp/verify_gdps.log
-            exit 1
-          fi
+              cat /tmp/verify_gdps.log
+              exit 1
+            fi
 
-          cat /tmp/verify_gdps.log
-          SUMMARY="$(grep -E '^\[VERIFY\]|^===|^\[guest-probe\]' /tmp/verify_run.log /tmp/verify_gdps.log | sed 's|^/tmp/||' | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+            cat /tmp/verify_gdps.log
+            SUMMARY="$(grep -E '^\[VERIFY\]|^===|^\[guest-probe\]' /tmp/verify_run.log /tmp/verify_gdps.log | sed 's|^/tmp/||' | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
+          fi
+          SUMMARY_LOGS="/tmp/verify_run.log"
+          if [ -f /tmp/verify_gdps.log ]; then SUMMARY_LOGS="$SUMMARY_LOGS /tmp/verify_gdps.log"; fi
+          SUMMARY="$(grep -E '^\[VERIFY\]|^===|^\[guest-probe\]' $SUMMARY_LOGS | sed 's|^/tmp/||' | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
           echo "::notice title=ARM64 Runtime Verification::$SUMMARY"
 
   publish-release:
@@ -432,7 +458,16 @@ jobs:
           GDPS_APK="gd-1.02-gdps-com.robtopx.geomgdps102.apk"
           SHA_COINSTALL="$(cat "dist/${APK_NAME}.sha256")"
           SHA_ORIG="$(cat "dist/${ORIG_PKG_APK}.sha256")"
-          SHA_GDPS="$(cat "dist/${GDPS_APK}.sha256")"
+          SHA_GDPS=""
+          ASSETS=(
+            "dist/${APK_NAME}" "dist/${APK_NAME}.sha256"
+            "dist/${ORIG_PKG_APK}" "dist/${ORIG_PKG_APK}.sha256"
+          )
+          # The private-server variant is optional: include it only when it was built.
+          if [ -f "dist/${GDPS_APK}" ]; then
+            SHA_GDPS="$(cat "dist/${GDPS_APK}.sha256")"
+            ASSETS+=("dist/${GDPS_APK}" "dist/${GDPS_APK}.sha256")
+          fi
 
           # Refresh earlier release tags in-place so any bookmarked links serve the fully fixed APKs.
           for OLD_TAG in v1.0.0 v1.0.1 v1.0.2 v1.0.3; do
@@ -447,51 +482,36 @@ jobs:
           done
 
           NOTES=$(cat <<EOF
-          ## gd 1.02 arm64 — v1.0.4 (Private offline 1.0 GD level server + music unpause & SFX fixes)
+          ## gd 1.02 arm64 — v1.0.4 (music unpause & sound-effect fixes)
 
           ### What's New in v1.0.4
-          - **New \`com.robtopx.geomgdps102\` build with a fully private, offline Geometry Dash 1.0 level server baked into the APK.** Every archived 1.0-era online level (IDs **128..1941**) preserved by [GD History](https://history.geometrydash.eu) is embedded as a compact level archive (\`assets/gdps/levels_1_0.bin\`). The bridge transparently redirects \`www.boomlings.com\`/\`boomlings.com\` DNS + TCP to an in-process read-only HTTP server on \`127.0.0.1\` (loopback, random port), so the unmodified original \`libgame.so\` browses, searches and downloads real 1.0 levels with **no internet connection at all**.
-          - **Level uploading is hard-blocked.** \`uploadGJLevel.php\`, \`uploadGJComment.php\`, \`uploadGJLevelList.php\`, \`deleteGJLevelUser.php\` and every other \`upload*\`/\`delete*\` endpoint always answer \`-1\`; likes, ratings and download counters are kept locally in the app's private data dir and never leave the device.
-          - **Earliest archived version of every level.** For each ID the earliest preserved revision is used, and any post-1.0 (1.9-2.2) level string is converted back into native 1.02 \`kS1,...;kA1,...\` format with unsupported objects removed and BG/ground colors preserved. Only IDs with no archived data at all are skipped.
-          - **Includes v1.0.3 Music Unpause Position Fix**: \`ModernMusicController\` keeps the exact paused \`MediaPlayer\` decoder state, so unpausing resumes at the same millisecond instead of restarting at \`0:00\`.
-          - **Includes v1.0.2 SFX Pitch & Speed Fix**: correct variadic \`jfloat\` -> \`double\` unmarshaling, so sound effects play at 100% speed/pitch.
+          - **Includes the v1.0.3 music unpause fix**: \`ModernMusicController\` keeps the exact paused \`MediaPlayer\` decoder state, so unpausing resumes at the same millisecond instead of restarting at \`0:00\`.
+          - **Includes the v1.0.2 SFX pitch & speed fix**: correct variadic \`jfloat\` -> \`double\` unmarshalling, so sound effects play at 100% speed and pitch.
+          - Both variants below are rebuilt from the same verified ARM64 source and re-run through the full native ARM64 + GLES2 + JVM verification suite on real ARM64 hardware before publishing.
 
           ### APK Variants Included
-          1. **\`${GDPS_APK}\`** — **Private-server variant** (\`package="com.robtopx.geomgdps102"\`, app name **\`gd 1.02 gdps arm64\`**). Co-installable alongside every other variant; contains the archived 1.0 levels (IDs 128..1941) and works completely offline.
-          2. **\`${APK_NAME}\`** — **Co-installable variant** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**), official online servers.
-          3. **\`${ORIG_PKG_APK}\`** — **Original package ID variant** (\`package="com.robtopx.geometryjump"\`, app name **\`Geometry Dash\`**), official online servers.
+          1. **\`${APK_NAME}\`** — **Co-installable variant** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**), official online servers.
+          2. **\`${ORIG_PKG_APK}\`** — **Original package ID variant** (\`package="com.robtopx.geometryjump"\`, app name **\`Geometry Dash\`**), official online servers.
 
           ### SHA-256 Checksums
           \`\`\`text
-          ${SHA_GDPS}
           ${SHA_COINSTALL}
           ${SHA_ORIG}
+          ${SHA_GDPS}
           \`\`\`
           EOF
           )
 
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "$TAG" \
-              "dist/${GDPS_APK}" \
-              "dist/${GDPS_APK}.sha256" \
-              "dist/${APK_NAME}" \
-              "dist/${APK_NAME}.sha256" \
-              "dist/${ORIG_PKG_APK}" \
-              "dist/${ORIG_PKG_APK}.sha256" \
+            gh release upload "$TAG" "${ASSETS[@]}" \
               --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" \
-              --title "gd 1.02 arm64 — v1.0.4 (com.robtopx.geomgdps102 offline 1.0 level server)" \
+              --title "gd 1.02 arm64 — v1.0.4 (music unpause & sound-effect fixes)" \
               --notes "$NOTES" \
               --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "$TAG" \
-              "dist/${GDPS_APK}" \
-              "dist/${GDPS_APK}.sha256" \
-              "dist/${APK_NAME}" \
-              "dist/${APK_NAME}.sha256" \
-              "dist/${ORIG_PKG_APK}" \
-              "dist/${ORIG_PKG_APK}.sha256" \
-              --title "gd 1.02 arm64 — v1.0.4 (com.robtopx.geomgdps102 offline 1.0 level server)" \
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "gd 1.02 arm64 — v1.0.4 (music unpause & sound-effect fixes)" \
               --notes "$NOTES" \
               --target "${GITHUB_SHA}" \
               --repo "${GITHUB_REPOSITORY}"
