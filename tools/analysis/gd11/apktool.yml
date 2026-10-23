@@ -1,0 +1,24 @@
+version: 2.11.1
+apkFileName: gd_ref_1.1.apk
+isFrameworkApk: false
+usesFramework:
+  ids:
+  - 1
+  tag: null
+sdkInfo:
+  minSdkVersion: 8
+  targetSdkVersion: 16
+packageInfo:
+  forcedPackageId: 127
+  renameManifestPackage: null
+versionInfo:
+  versionCode: 5
+  versionName: 1.1
+sharedLibrary: false
+sparseResources: false
+compactEntries: false
+doNotCompress:
+- arsc
+- mp3
+- ogg
+- png

@@ -1,5 +1,6 @@
 # gd_ref_1.71.apk facts
 apk_size 37542668
+apk_sha256 e5f8b24b5f17b7f29d957d9de35b53362c1d9a3dea2af79d2ff9fbf753b430b0
 
 ## entries
 3660 AndroidManifest.xml

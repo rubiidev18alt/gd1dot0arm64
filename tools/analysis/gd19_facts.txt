@@ -1,5 +1,6 @@
 # gd_ref_1.9.apk facts
 apk_size 49214582
+apk_sha256 3cbc4adfd6b2d122432b717538da5959f1f481a7696ba812d5e77d0cdec1931b
 
 ## entries
 7240 AndroidManifest.xml
