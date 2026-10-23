@@ -72,25 +72,72 @@ jobs:
           echo "--- level names ---"
           strings -a "$SO" | grep -iE "stereo madness|back on track|polargeist|dry out|base after base|can.t let go|^jumper$|time machine" | sort -u | head -20
 
-      - name: Publish digest annotations
-        if: always()
+      - name: Decode framework smali (for the text-layout port)
         run: |
-          set -uo pipefail
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-17-jre-headless >/dev/null
+          curl -fsSL -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
+          cd /tmp && rm -rf decoded && java -jar /tmp/apktool.jar d -f -q --no-res --no-src -o /tmp/decoded /tmp/gd_cache/orig.apk 2>/dev/null || \
+            java -jar /tmp/apktool.jar d -f -q -o /tmp/decoded /tmp/gd_cache/orig.apk
+          mkdir -p "$GITHUB_WORKSPACE/tools/analysis/smali"
+          for F in org/cocos2dx/lib/Cocos2dxBitmap.smali org/cocos2dx/lib/Cocos2dxRenderer.smali org/cocos2dx/lib/Cocos2dxHelper.smali; do
+            if [ -f "/tmp/decoded/smali/$F" ]; then
+              cp "/tmp/decoded/smali/$F" "$GITHUB_WORKSPACE/tools/analysis/smali/$(basename "$F")"
+            elif [ -f "/tmp/decoded/smali_classes2/$F" ]; then
+              cp "/tmp/decoded/smali_classes2/$F" "$GITHUB_WORKSPACE/tools/analysis/smali/$(basename "$F")"
+            fi
+          done
+          ls -la "$GITHUB_WORKSPACE/tools/analysis/smali"
+
+      - name: Commit facts file
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p tools/analysis
+          OUT=tools/analysis/gd102_facts.txt
+          SO=/tmp/apkx/lib/armeabi/libgame.so
           {
-            echo "## GD 1.02 APK digest"
-            APK=/tmp/gd_cache/orig.apk
-            echo "- size: $(stat -c%s "$APK" 2>/dev/null || echo 0) bytes"
-            echo "- assets: $(find /tmp/apkx/assets -type f 2>/dev/null | wc -l) files"
-            echo "- LevelData.plist present: $([ -f /tmp/apkx/assets/LevelData.plist ] && echo yes || echo no)"
-          } > /tmp/digest.md
-          {
-            echo "ASSETLIST"
-            find /tmp/apkx/assets -type f -printf '%s %p\n' 2>/dev/null | sed 's|/tmp/apkx/||' | head -120
-          } >> /tmp/digest.md
-          python3 - <<'PY'
-          import pathlib
-          raw = pathlib.Path("/tmp/digest.md").read_text(errors="replace")
-          txt = raw.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-          for idx, start in enumerate(range(0, len(txt), 3500)):
-              print(f"::notice title=GD102 digest {idx+1}::{txt[start:start+3500]}")
-          PY
+            echo "# GD 1.02 build 4 APK facts (generated)";
+            echo "apk_sha256 $(sha256sum /tmp/gd_cache/orig.apk | cut -d' ' -f1)";
+            echo "apk_size $(stat -c%s /tmp/gd_cache/orig.apk)";
+            echo;
+            echo "## assets";
+            find /tmp/apkx/assets -type f -printf '%s %p\n' | sed 's|/tmp/apkx/||' | sort -k2;
+            echo;
+            echo "## lib";
+            find /tmp/apkx/lib -type f -printf '%s %p\n' | sed 's|/tmp/apkx/||';
+            echo;
+            echo "## objectDefinitions.plist";
+            cat /tmp/apkx/assets/objectDefinitions.plist;
+            echo;
+            echo "## GJ_GameSheet frames";
+            python3 - <<'PY2'
+          import plistlib, pathlib
+          p = pathlib.Path("/tmp/apkx/assets/GJ_GameSheet.plist")
+          d = plistlib.loads(p.read_bytes())
+          frames = sorted((d.get("frames") or {}).keys())
+          print("frame_count", len(frames))
+          print("\n".join(frames))
+          PY2
+            echo;
+            echo "## libgame.so strings survey";
+            for PAT in "portal_0" "portal_1" "mirror" "Mirror" "LevelData" "Time Machine" "Stereo Madness" "Jumper" "kS1," "H4sI" "Achievement" "Cocos2dxBitmap" "maxTextureSize" "GL_MAX_TEXTURE"; do
+              printf '%-18s %s\n' "$PAT" "$(strings -a "$SO" | grep -c -- "$PAT")";
+            done;
+            echo;
+            echo "## libgame.so portal-ish strings";
+            strings -a "$SO" | grep -iE "portal|mirror" | sort -u;
+            echo;
+            echo "## libgame.so level-name-ish strings";
+            strings -a "$SO" | grep -iE "stereo|polargeist|dry out|base after|let go|jumper|time machine|cycles|xstep|clutterfunk|fingerdash" | sort -u | head -40;
+            echo;
+            echo "## libgame.so achievement strings";
+            strings -a "$SO" | grep -iE "^ach|achievement" | sort -u | head -40;
+          } > "$OUT"
+          wc -c "$OUT"
+          git config user.name "gd102-inspector"
+          git config user.email "gd102-inspector@users.noreply.github.com"
+          git add "$OUT" tools/analysis/smali 2>/dev/null || git add "$OUT"
+          git diff --cached --quiet && echo "no changes" && exit 0
+          git commit -q -m "chore(analysis): record GD 1.02 APK facts [skip ci]"
+          git push
