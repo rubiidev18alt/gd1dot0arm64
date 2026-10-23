@@ -47,6 +47,36 @@ jobs:
           python3 scripts/dump_apk_facts.py /tmp/gd_cache/orig.apk --out tools/analysis/gd102_facts.txt
           head -40 tools/analysis/gd102_facts.txt
 
+      - name: Fetch reference builds (1.1, 1.71, 1.9) and dump their facts
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          set -uo pipefail
+          fetch_zip_member() {
+            local MEMBER="$1" OUT="$2"
+            for U in \
+              "https://ia803202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=${MEMBER}" \
+              "https://archive.org/download/every-geometry-dash-version/every%20geometry%20dash%20version.zip/${MEMBER}"; do
+              if curl -fsSL --max-time 600 -o "$OUT" "$U" && [ -s "$OUT" ]; then return 0; fi
+            done
+            return 1
+          }
+          declare -A V=(
+            [1.1]="Geometry.Dash.ver.1.1.build.5.apk"
+            [1.71]="Geometry.Dash.ver.1.71.build.18.apk"
+            [1.9]="Geometry.Dash.ver.1.90.build.22.apk"
+          )
+          for KEY in 1.1 1.71 1.9; do
+            APK="/tmp/gd_ref_${KEY}.apk"
+            if fetch_zip_member "${V[$KEY]}" "$APK"; then
+              echo "fetched $KEY ($(stat -c%s "$APK") bytes)"
+              python3 scripts/dump_apk_facts.py "$APK" --out "tools/analysis/gd${KEY/./}_facts.txt" || true
+            else
+              echo "::warning title=GD archive::could not fetch ${V[$KEY]}"
+            fi
+          done
+          ls -la tools/analysis
+
       - name: List versions available in the public GD archive
         continue-on-error: true
         run: |
