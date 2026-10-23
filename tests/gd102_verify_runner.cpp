@@ -369,12 +369,12 @@ int main(int argc, char **argv) {
     };
     drain_music_events();
 
-    // 1) Advance 60 frames (~1.18s total into StereoMadness.mp3) and pause (`KEYCODE_BACK = 4`).
-    for (int i = 0; i < 60; i++) {
+    // 1) Advance 30 frames (~0.66s into StereoMadness.mp3, well before the 1% spike at ~1.63s) and pause.
+    for (int i = 0; i < 30; i++) {
         usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
-    env->CallStaticVoidMethod(cls_mp, mid_mp_adv, (jint)1180);
+    env->CallStaticVoidMethod(cls_mp, mid_mp_adv, (jint)660);
     drain_music_events();
 
     jboolean back_handled = Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
@@ -390,7 +390,7 @@ int main(int argc, char **argv) {
 
     // Unpause #1 (short pause): tap PauseLayer center Resume button at (640, 400).
     env->CallStaticVoidMethod(cls_mp, mid_mp_reset);
-    tap(640.0f, 400.0f, 20);
+    tap(640.0f, 400.0f, 5);
     std::string unpause1_ev = drain_music_events();
     int unpause1_pos   = env->CallStaticIntMethod(cls_mp, mid_mp_pos);
     int unpause1_stops = env->GetStaticIntField(cls_mp, fid_mp_stops);
@@ -400,18 +400,19 @@ int main(int argc, char **argv) {
            unpause1_pos, unpause1_stops, unpause1_seek0, unpause1_races, unpause1_ev.c_str());
     CHECK(env->CallStaticBooleanMethod(cls_mctrl, mid_mc_playing),
           "Expected music playing after Unpause #1");
-    CHECK(unpause1_pos >= 900,
-          "Music restarted at beginning on Unpause #1! Expected >= 900 ms, got %d ms", unpause1_pos);
+    CHECK(unpause1_pos >= 500,
+          "Music restarted at beginning on Unpause #1! Expected >= 500 ms, got %d ms", unpause1_pos);
     CHECK(unpause1_stops == 0 && unpause1_seek0 == 0 && unpause1_races == 0,
           "Unexpected stop/seekTo(0)/race during Unpause #1: stops=%d seek0=%d races=%d",
           unpause1_stops, unpause1_seek0, unpause1_races);
 
-    // 2) Play 45 more frames, pause again, simulate 15-second long pause, and unpause!
-    for (int i = 0; i < 45; i++) {
+    // 2) Play 25 more frames (~1.15s total, still well before the 1% spike at ~1.63s),
+    //    pause again, simulate a 15-second long pause, and unpause!
+    for (int i = 0; i < 25; i++) {
         usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
-    env->CallStaticVoidMethod(cls_mp, mid_mp_adv, (jint)750);
+    env->CallStaticVoidMethod(cls_mp, mid_mp_adv, (jint)500);
     drain_music_events();
 
     Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
@@ -423,7 +424,7 @@ int main(int argc, char **argv) {
     env->CallStaticVoidMethod(cls_mp, mid_mp_reset);
     env->CallStaticVoidMethod(cls_clock, mid_clk_adv, (jlong)15000);
 
-    tap(640.0f, 400.0f, 20);
+    tap(640.0f, 400.0f, 5);
     std::string unpause2_ev = drain_music_events();
     int unpause2_pos   = env->CallStaticIntMethod(cls_mp, mid_mp_pos);
     int unpause2_seek0 = env->GetStaticIntField(cls_mp, fid_mp_seek0);
@@ -432,8 +433,8 @@ int main(int argc, char **argv) {
            unpause2_pos, unpause2_mode, unpause2_seek0, unpause2_ev.c_str());
     CHECK(env->CallStaticBooleanMethod(cls_mctrl, mid_mc_playing),
           "Expected music playing after Unpause #2");
-    CHECK(unpause2_pos >= 1600,
-          "Music restarted at beginning on Unpause #2! Expected >= 1600 ms, got %d ms", unpause2_pos);
+    CHECK(unpause2_pos >= 900,
+          "Music restarted at beginning on Unpause #2! Expected >= 900 ms, got %d ms", unpause2_pos);
     CHECK(unpause2_seek0 == 0 && unpause2_mode == 3,
           "Expected SEEK_CLOSEST (3) with 0 seekTo(0) calls on Unpause #2, got mode=%d seek0=%d",
           unpause2_mode, unpause2_seek0);
