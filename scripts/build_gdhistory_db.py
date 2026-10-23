@@ -21,11 +21,14 @@ import datetime as dt
 import hashlib
 import json
 import math
+import os
 import pathlib
 import plistlib
+import random
 import re
 import struct
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -55,25 +58,86 @@ HTTP_HEADERS = {
     "Accept-Encoding": "identity",
     "Connection": "close",
 }
+_CURL = shutil.which("curl")
+
+
 HTTP_MIN_INTERVAL = 0.45
-_HTTP_LOCK = threading.Lock()
-_ADAPTIVE_DELAY = [HTTP_MIN_INTERVAL]
+ROUTE_TIMEOUT = 30.0
+RETRYABLE_CODES = (0, 403, 408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 524)
+
+# GD History sits behind Cloudflare, which rejects datacenter IP ranges (GitHub-hosted
+# runners included) on the origin. Requests are therefore attempted over several independent
+# network paths ("routes"): the origin itself, curl (different TLS fingerprint), Google's
+# Translate proxy, and a handful of public read-only HTTP relays. A probe picks the healthy
+# ones and every level fetch falls back through the remaining routes, so a single blocked
+# path can no longer stall the build.
+PROXY_TEMPLATES: dict[str, str] = {
+    "codetabs": "https://api.codetabs.com/v1/proxy?quest={quoted}",
+    "allorigins": "https://api.allorigins.win/raw?url={quoted}",
+    "corslol": "https://api.cors.lol/?url={quoted}",
+    "corsproxyorg": "https://corsproxy.org/?{quoted}",
+    "corsfix": "https://proxy.corsfix.com/?{quoted}",
+}
+JINA_TEMPLATE = "https://r.jina.ai/{raw}"
+TRANSLATE_HOST = "history-geometrydash-eu.translate.goog"
+DEFAULT_ROUTE_ORDER = [
+    "direct",
+    "curl",
+    "translate",
+    "codetabs",
+    "corslol",
+    "allorigins",
+    "corsproxyorg",
+    "corsfix",
+    "jina",
+]
 
 
-def _note_response(ok: bool) -> None:
-    """Throttle adaptively: back off hard on 403/429 (Cloudflare), relax slowly on success."""
-    with _HTTP_LOCK:
-        if ok:
-            _ADAPTIVE_DELAY[0] = max(0.35, _ADAPTIVE_DELAY[0] * 0.92)
-        else:
-            _ADAPTIVE_DELAY[0] = min(6.0, _ADAPTIVE_DELAY[0] * 1.8)
+class RouteError(RuntimeError):
+    """A single network path failed for one URL (code 0 means a transport-level failure)."""
+
+    def __init__(self, code: int, detail: str = ""):
+        super().__init__(f"HTTP {code} {detail}".strip())
+        self.code = int(code)
+        self.detail = detail
 
 
-def _pace() -> None:
-    with _HTTP_LOCK:
-        delay = _ADAPTIVE_DELAY[0]
-    if delay > 0:
-        time.sleep(delay)
+class Route:
+    def __init__(self, name: str, fetch):
+        self.name = name
+        self._fetch = fetch
+        self.ok = 0
+        self.fail = 0
+        self.streak = 0
+        self.delay = HTTP_MIN_INTERVAL
+        self.last_error = ""
+        self.lock = threading.Lock()
+
+    def fetch(self, url: str, timeout: float) -> bytes:
+        return self._fetch(url, timeout)
+
+    @property
+    def score(self) -> int:
+        return self.ok - 2 * self.fail
+
+    def note(self, ok: bool, err: str = "") -> None:
+        with self.lock:
+            if ok:
+                self.ok += 1
+                self.streak = 0
+                self.delay = max(0.15, self.delay * 0.9)
+            else:
+                self.fail += 1
+                self.streak += 1
+                self.last_error = err
+                self.delay = min(4.0, max(0.35, self.delay) * 1.6)
+
+    def pace(self) -> None:
+        with self.lock:
+            delay = self.delay
+        if delay > 0:
+            time.sleep(delay * (0.75 + random.random() * 0.5))
+
 
 # Complete Geometry Dash 1.02 ObjectToolbox object ID -> GJ_GameSheet.plist frame table.
 GD10_OBJECT_FRAMES: dict[int, str] = {
@@ -179,67 +243,241 @@ def verify_gd10_frames_against_apk(orig_apk: pathlib.Path | None) -> set[int]:
     return valid_ids
 
 
-_CURL = shutil.which("curl")
-
-
-def http_get_via_curl(url: str, timeout: float) -> bytes | None:
-    """Cloudflare-friendly fallback: `curl` presents a different TLS/HTTP fingerprint than urllib."""
-    if not _CURL:
-        return None
-    cmd = [
-        _CURL,
-        "-fsSL",
-        "--http1.1",
-        "--compressed",
-        "--max-time",
-        str(int(timeout)),
-        "--retry",
-        "2",
-        "--retry-delay",
-        "2",
-        "-A",
-        HTTP_HEADERS["User-Agent"],
-        "-e",
-        HTTP_HEADERS["Referer"],
-        "-H",
-        "Accept: " + HTTP_HEADERS["Accept"],
-        url,
-    ]
-    proc = subprocess.run(cmd, capture_output=True)
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
-
-
-def http_get_bytes(url: str, retries: int = 6, timeout: float = 30.0) -> bytes | None:
-    for attempt in range(retries):
-        _pace()
-        req = urllib.request.Request(url, headers=HTTP_HEADERS)
+def _direct_fetch(url: str, timeout: float) -> bytes:
+    req = urllib.request.Request(url, headers=HTTP_HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        detail = ",".join(
+            f"{k}={e.headers.get(k)}"
+            for k in ("server", "cf-ray", "cf-mitigated", "content-type")
+            if e.headers.get(k)
+        )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = resp.read()
-                _note_response(True)
-                return body
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return None
-            if e.code in (403, 408, 425, 429, 500, 502, 503, 504):
-                _note_response(False)
-                if attempt >= 1:
-                    body = http_get_via_curl(url, timeout)
-                    if body is not None:
-                        return body
-                if attempt + 1 < retries:
-                    time.sleep(min(6.0, 1.0 + attempt))
+            snippet = e.read(160).decode("utf-8", "replace").replace("\n", " ")
+        except Exception:  # noqa: BLE001
+            snippet = ""
+        raise RouteError(e.code, f"{detail} {snippet}".strip()) from e
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+        raise RouteError(0, repr(e)[:140]) from e
+
+
+def _curl_fetch(url: str, timeout: float) -> bytes:
+    if not _CURL:
+        raise RouteError(0, "curl unavailable")
+    fd, path = tempfile.mkstemp(prefix="gdhistory_fetch_")
+    os.close(fd)
+    try:
+        cmd = [
+            _CURL,
+            "-sS",
+            "--http1.1",
+            "--compressed",
+            "--max-time",
+            str(int(timeout)),
+            "-A",
+            HTTP_HEADERS["User-Agent"],
+            "-e",
+            HTTP_HEADERS["Referer"],
+            "-H",
+            "Accept: " + HTTP_HEADERS["Accept"],
+            "-o",
+            path,
+            "-w",
+            "%{http_code}",
+            url,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        raw_code = (proc.stdout or "").strip()
+        code = int(raw_code) if raw_code.isdigit() else 0
+        if code != 200:
+            stderr = (proc.stderr or "").strip().splitlines()
+            raise RouteError(code, stderr[-1][:140] if stderr else "curl")
+        return pathlib.Path(path).read_bytes()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _relay_fetch(target: str, timeout: float) -> bytes:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+    }
+    req = urllib.request.Request(target, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        raise RouteError(e.code, "relay") from e
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+        raise RouteError(0, repr(e)[:140]) from e
+
+
+def _translate_target(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    extra = "_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en&_x_tr_pto=nui"
+    query = f"{parts.query}&{extra}" if parts.query else extra
+    return urllib.parse.urlunsplit((parts.scheme, TRANSLATE_HOST, parts.path or "/", query, ""))
+
+
+def build_routes(names: list[str] | None = None) -> list[Route]:
+    wanted = list(names) if names else list(DEFAULT_ROUTE_ORDER)
+    routes: list[Route] = []
+    for name in wanted:
+        if name == "direct":
+            routes.append(Route("direct", _direct_fetch))
+        elif name == "curl":
+            routes.append(Route("curl", _curl_fetch))
+        elif name == "translate":
+            routes.append(
+                Route("translate", lambda u, t: _relay_fetch(_translate_target(u), t))
+            )
+        elif name == "jina":
+            routes.append(
+                Route("jina", lambda u, t: _relay_fetch(JINA_TEMPLATE.format(raw=u), t))
+            )
+        elif name in PROXY_TEMPLATES:
+            template = PROXY_TEMPLATES[name]
+            routes.append(
+                Route(
+                    name,
+                    lambda u, t, template=template: _relay_fetch(
+                        template.format(quoted=urllib.parse.quote(u, safe="")), t
+                    ),
+                )
+            )
+        else:
+            raise SystemExit(f"unknown GD History route {name!r} (known: {', '.join(DEFAULT_ROUTE_ORDER)})")
+    return routes
+
+
+_ROUTES: list[Route] = []
+_ROUTES_LOCK = threading.Lock()
+_ACTIVE_ROUTE = [""]
+
+
+def configure_routes(names: list[str] | None = None) -> list[Route]:
+    global _ROUTES
+    with _ROUTES_LOCK:
+        _ROUTES = build_routes(names)
+        _ACTIVE_ROUTE[0] = ""
+        return _ROUTES
+
+
+def _ordered_routes() -> list[Route]:
+    with _ROUTES_LOCK:
+        routes = list(_ROUTES)
+    # Highest score first (healthiest route), stable against the configured order.
+    return [r for _, r in sorted(enumerate(routes), key=lambda item: (-item[1].score, item[0]))]
+
+
+def _announce_route(route: Route, size: int) -> None:
+    with _ROUTES_LOCK:
+        if _ACTIVE_ROUTE[0] == route.name:
+            return
+        _ACTIVE_ROUTE[0] = route.name
+    print(f"  [route] GD History requests are being served over '{route.name}' ({size} bytes)")
+
+
+def http_get_bytes(
+    url: str,
+    retries: int = 2,
+    timeout: float = ROUTE_TIMEOUT,
+    validate=None,
+) -> bytes | None:
+    """GET `url` through the healthiest route, failing over across every configured route.
+
+    Returns None for an authoritative HTTP 404 (the record/file genuinely does not exist)."""
+    errors: list[str] = []
+    for route in _ordered_routes():
+        for attempt in range(retries):
+            route.pace()
+            try:
+                body = route.fetch(url, timeout)
+            except RouteError as e:
+                if e.code == 404:
+                    route.note(True)
+                    return None
+                route.note(False, str(e))
+                if e.code in RETRYABLE_CODES and attempt + 1 < retries:
+                    time.sleep(0.5 * (attempt + 1))
                     continue
-            raise RuntimeError(f"GET {url} -> HTTP {e.code}") from e
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            _note_response(False)
-            if attempt + 1 < retries:
-                time.sleep(min(6.0, 1.0 + attempt))
-                continue
-            raise RuntimeError(f"GET {url} failed: {e!r}") from e
-    return None
+                errors.append(f"{route.name}:{e.code}")
+                break
+            except Exception as e:  # noqa: BLE001 - never let one route kill the build
+                route.note(False, repr(e))
+                errors.append(f"{route.name}:{type(e).__name__}")
+                break
+            else:
+                if not body:
+                    route.note(False, "empty body")
+                    errors.append(f"{route.name}:empty")
+                    break
+                if validate is not None:
+                    # Public relays return HTTP 200 with their own error pages; reject those
+                    # before they can be cached, and fail over to the next route.
+                    try:
+                        validate(body)
+                    except Exception as exc:  # noqa: BLE001
+                        route.note(False, f"invalid payload: {exc}")
+                        errors.append(f"{route.name}:invalid")
+                        break
+                route.note(True)
+                _announce_route(route, len(body))
+                return body
+    raise RuntimeError(f"GET {url} failed on every route [{', '.join(errors)}]")
+
+
+def probe_routes(
+    routes: list[Route], timeout: float = 20.0, thorough: bool = True
+) -> list[Route]:
+    """Exercise every route against the public API and report which ones actually work."""
+    targets = [
+        ("counts", f"{GDHISTORY_BASE}/api/v1/counts/"),
+        ("level_json", f"{GDHISTORY_BASE}/api/v1/level/128/"),
+        ("level_download", f"{GDHISTORY_BASE}/level/128/10988023/download/"),
+    ]
+    if not thorough:
+        targets = targets[:1]
+    working: list[Route] = []
+    print(f"==> Probing {len(routes)} GD History network route(s)")
+    for route in routes:
+        successes = 0
+        for label, url in targets:
+            started = time.monotonic()
+            body = b""
+            code, detail = 0, ""
+            try:
+                body = route.fetch(url, timeout)
+                code = 200
+            except RouteError as e:
+                code, detail = e.code, e.detail
+            except Exception as e:  # noqa: BLE001
+                code, detail = 0, f"{type(e).__name__}: {e}"[:140]
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            head = body[:100].decode("utf-8", "replace").replace("\n", " ").replace("\r", " ")
+            print(
+                f"PROBE route={route.name} target={label} code={code} bytes={len(body)} "
+                f"ms={elapsed_ms} detail={detail!r} head={head!r}"
+            )
+            if code == 200 and body:
+                successes += 1
+                route.note(True)
+            else:
+                route.note(False, f"{code}")
+                if not thorough:
+                    break
+        if successes:
+            working.append(route)
+    summary = ",".join(r.name for r in working) or "none"
+    print(f"PROBE_SUMMARY working={summary}")
+    return working
 
 
 def robtop_gmd_to_dict(gmd_bytes: bytes) -> dict:
@@ -510,13 +748,20 @@ def inspect_and_convert_level_string(
     return body, is_pure_1_0, len(out_objs), dropped
 
 
+def _validate_json_body(raw: bytes) -> None:
+    json.loads(raw.decode("utf-8"))
+
+
 def fetch_or_load_level_json(online_id: int, cache_dir: pathlib.Path | None) -> dict | None:
     cache_file = cache_dir / "json" / f"{online_id}.json" if cache_dir else None
     if cache_file and cache_file.is_file():
-        return json.loads(cache_file.read_text(encoding="utf-8"))
+        try:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            cache_file.unlink(missing_ok=True)  # discard a poisoned cache entry
 
     url = f"{GDHISTORY_BASE}/api/v1/level/{online_id}/"
-    raw = http_get_bytes(url)
+    raw = http_get_bytes(url, validate=_validate_json_body)
     if raw is None:
         return None
     data = json.loads(raw.decode("utf-8"))
@@ -526,23 +771,35 @@ def fetch_or_load_level_json(online_id: int, cache_dir: pathlib.Path | None) -> 
     return data
 
 
+def _validate_gmd_body(raw: bytes) -> None:
+    d = robtop_gmd_to_dict(raw)
+    k4 = d.get("k4")
+    if not isinstance(k4, str) or not k4.strip():
+        raise ValueError("level file has no k4 level string")
+
+
 def fetch_or_load_gmd_k4(online_id: int, record_id: int, cache_dir: pathlib.Path | None) -> str | None:
     cache_file = cache_dir / "gmd" / f"{online_id}_{record_id}.gmd" if cache_dir else None
     if cache_file and cache_file.is_file():
         raw = cache_file.read_bytes()
+        try:
+            _validate_gmd_body(raw)
+        except Exception:  # noqa: BLE001 - poisoned cache entry from an earlier relay
+            cache_file.unlink(missing_ok=True)
+            raw = None
     else:
+        raw = None
+
+    if raw is None:
         url = f"{GDHISTORY_BASE}/level/{online_id}/{record_id}/download/"
-        raw = http_get_bytes(url)
+        raw = http_get_bytes(url, validate=_validate_gmd_body)
         if raw is None:
             return None
         if cache_file:
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             cache_file.write_bytes(raw)
 
-    try:
-        d = robtop_gmd_to_dict(raw)
-    except Exception:
-        return None
+    d = robtop_gmd_to_dict(raw)
     k4 = d.get("k4")
     if not isinstance(k4, str) or not k4.strip():
         return None
@@ -577,7 +834,7 @@ def discover_archived_1_0_ids(
             }
         )
         url = f"{GDHISTORY_BASE}/api/v1/search/level/advanced/?{qs}"
-        raw = http_get_bytes(url)
+        raw = http_get_bytes(url, validate=_validate_json_body)
         if not raw:
             break
         payload = json.loads(raw.decode("utf-8"))
@@ -910,7 +1167,51 @@ def main() -> None:
         help="Skip levels that were later deleted from the official GD servers (default: keep every "
         "level GD History preserved, including levels removed from the live game)",
     )
+    ap.add_argument(
+        "--routes",
+        default=None,
+        help="Comma-separated network route preference (default: auto over "
+        + ",".join(DEFAULT_ROUTE_ORDER)
+        + ")",
+    )
+    ap.add_argument(
+        "--probe",
+        action="store_true",
+        help="Only probe every network route against the GD History API and report which work",
+    )
+    ap.add_argument(
+        "--probe-timeout",
+        type=float,
+        default=20.0,
+        help="Per-request timeout while probing routes (default: 20s)",
+    )
+    ap.add_argument(
+        "--deadline-seconds",
+        type=int,
+        default=0,
+        help="Stop scheduling new level downloads after this many seconds (0 = no deadline). "
+        "Cached responses make the next run resume where this one stopped.",
+    )
+    ap.add_argument(
+        "--skip-probe",
+        action="store_true",
+        help="Skip the startup route probe (not recommended; failures then surface lazily)",
+    )
     args = ap.parse_args()
+
+    configure_routes(
+        [r.strip() for r in args.routes.split(",") if r.strip()] if args.routes else None
+    )
+
+    if args.probe:
+        working = probe_routes(_ROUTES, timeout=args.probe_timeout)
+        if not working:
+            print(
+                "PROBE_SUMMARY working=none (GD History is unreachable over every route)",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        return
 
     if args.out.is_file() and args.out.stat().st_size > 65536:
         raw = args.out.read_bytes()
@@ -923,6 +1224,16 @@ def main() -> None:
                     f"({cnt} levels, {len(raw)} bytes, sha256={sha})"
                 )
                 return
+
+    if not args.skip_probe:
+        working = probe_routes(_ROUTES, timeout=args.probe_timeout)
+        if not working:
+            raise RuntimeError(
+                "GD History is unreachable over every network route ("
+                + ", ".join(r.name for r in _ROUTES)
+                + "); inspect the PROBE lines above for the per-route HTTP codes"
+            )
+        print(f"==> Using GD History route(s): {', '.join(r.name for r in working)}")
 
     valid_obj_ids = verify_gd10_frames_against_apk(args.orig_apk)
     print(f"==> Verified {len(valid_obj_ids)} GD 1.02 object IDs: {sorted(valid_obj_ids)}")
@@ -938,37 +1249,64 @@ def main() -> None:
             f"Expected at least {args.min_levels} archived levels in {MIN_1_0_ID}..{MAX_1_0_ID}, got {len(archived_ids)}"
         )
 
+    deadline = time.monotonic() + args.deadline_seconds if args.deadline_seconds > 0 else None
     levels: list[dict] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        futs = {
-            pool.submit(
-                process_single_level, oid, args.cache_dir, valid_obj_ids, args.scan_versions
-            ): oid
-            for oid in archived_ids
-        }
-        done_cnt = 0
-        failed: list[int] = []
-        for fut in concurrent.futures.as_completed(futs):
-            oid = futs[fut]
-            done_cnt += 1
-            try:
-                res = fut.result()
-            except Exception as exc:  # transient HTTP/Cloudflare failures
-                print(f"  [error] ID {oid}: {exc!r}", file=sys.stderr)
-                failed.append(oid)
-                res = None
-            if res is not None:
-                levels.append(res)
-            elif oid not in failed:
-                print(f"  [skip] ID {oid}: no archived level_string available", file=sys.stderr)
-            if done_cnt % 50 == 0 or done_cnt == len(archived_ids):
-                print(f"  ... processed {done_cnt}/{len(archived_ids)} archived levels")
+    failed: list[int] = []
+    pending: list[int] = list(archived_ids)
+    processed = 0
+    stop_reason = ""
+
+    def absorb(oid: int, fut: concurrent.futures.Future) -> None:
+        nonlocal processed
+        processed += 1
+        try:
+            res = fut.result()
+        except Exception as exc:  # transient HTTP/Cloudflare failures
+            print(f"  [error] ID {oid}: {exc!r}", file=sys.stderr)
+            failed.append(oid)
+            return
+        if res is not None:
+            levels.append(res)
+        else:
+            print(f"  [skip] ID {oid}: no archived level_string available", file=sys.stderr)
+        if processed % 50 == 0:
+            print(f"  ... processed {processed}/{len(archived_ids)} archived levels")
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers))
+    try:
+        while pending:
+            if deadline and time.monotonic() >= deadline:
+                stop_reason = "deadline"
+                break
+            batch = pending[: max(1, args.workers) * 2]
+            del pending[: len(batch)]
+            futures = {
+                pool.submit(
+                    process_single_level, oid, args.cache_dir, valid_obj_ids, args.scan_versions
+                ): oid
+                for oid in batch
+            }
+            for fut in concurrent.futures.as_completed(futures):
+                absorb(futures[fut], fut)
+    finally:
+        pool.shutdown(wait=True)
+
+    if pending or stop_reason:
+        print(
+            f"==> Stopped early ({stop_reason or 'pending work'}) after {processed}/"
+            f"{len(archived_ids)} levels; {len(pending)} remain for the next run. "
+            "Every successful response is cached, so the next run resumes from here.",
+            file=sys.stderr,
+        )
 
     # One sequential retry pass for transient failures (Cloudflare 403/429 bursts).
-    if failed:
+    if failed and not pending:
         print(f"==> Retrying {len(failed)} level(s) that failed with transient errors")
         retry_failed: list[int] = []
         for oid in failed:
+            if deadline and time.monotonic() >= deadline:
+                retry_failed.append(oid)
+                continue
             try:
                 res = process_single_level(oid, args.cache_dir, valid_obj_ids, args.scan_versions)
             except Exception as exc:
@@ -987,7 +1325,10 @@ def main() -> None:
             )
 
     if len(levels) < args.min_levels:
-        raise RuntimeError(f"Built only {len(levels)} levels (< min_levels={args.min_levels})")
+        raise RuntimeError(
+            f"Built only {len(levels)} levels (< min_levels={args.min_levels}); "
+            "re-run to resume from the cached responses"
+        )
 
     write_binary_db(levels, args.out)
     elapsed = time.monotonic() - t0

@@ -41,7 +41,13 @@ jobs:
           path: |
             /tmp/gdhistory_cache
             third_party/levels_1_0.bin
-          key: gdhistory-1.0-levels-v2-${{ hashFiles('scripts/build_gdhistory_db.py') }}
+          # Deliberately NOT keyed on the script hash: every level's JSON/GMD response is
+          # cached so a run that hits its deadline resumes in the next one instead of
+          # starting over. A fresh key per run keeps the most recent progress restorable
+          # through `restore-keys`. Bump the `db1` token when the DB format changes.
+          key: gdhistory-1.0-levels-db1-${{ github.run_id }}
+          restore-keys: |
+            gdhistory-1.0-levels-db1-
 
       - name: Restore cached original Geometry Dash 1.02 APK
         uses: actions/cache@v4
@@ -49,22 +55,18 @@ jobs:
           path: /tmp/gd_cache
           key: gd-1.02-build4-orig-v1
 
-      - name: Probe GD History API availability
+      - name: Probe GD History network routes
         continue-on-error: true
+        timeout-minutes: 12
         run: |
           set -uo pipefail
-          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 gd1dot0arm64-archive-builder/1.0"
-          for URL in \
-            "https://history.geometrydash.eu/api/v1/counts/" \
-            "https://history.geometrydash.eu/api/v1/level/128/" \
-            "https://history.geometrydash.eu/level/128/10988023/download/" \
-            "https://history.geometrydash.eu/level/128/download/?type=gmd"; do
-            CODE="$(curl -s -o /tmp/probe_body -w '%{http_code}' --max-time 25 -A "$UA" \
-              -e "https://history.geometrydash.eu/" "$URL" || echo ERR)"
-            SIZE="$(stat -c%s /tmp/probe_body 2>/dev/null || echo 0)"
-            echo "curl: $CODE ($SIZE bytes) $URL"
-            echo "::notice title=GDHistory probe::$CODE ($SIZE bytes) $URL"
-          done
+          python3 scripts/build_gdhistory_db.py --out third_party/levels_1_0.bin \
+            --probe --probe-timeout 20 2>&1 | tee /tmp/gdhistory_probe.log || true
+          # Surface the per-route results as annotations (job logs are unavailable while
+          # the archive job is still running).
+          grep '^PROBE ' /tmp/gdhistory_probe.log | while IFS= read -r line; do
+            echo "::notice title=GDHistory route probe::${line//%/%%}"
+          done || true
 
       - name: Assemble private offline GD 1.0 level archive (IDs 128..1941)
         run: |
@@ -86,7 +88,8 @@ jobs:
               --out third_party/levels_1_0.bin \
               --orig-apk third_party/Geometry.Dash.ver.1.02.build.4.apk \
               --cache-dir /tmp/gdhistory_cache \
-              --workers 3
+              --workers 4 \
+              --deadline-seconds 4200
           ) > /tmp/gdhistory.log 2>&1; then
             python3 - /tmp/gdhistory.log "GD History archive build failed" << 'PYEOF'
           import sys
