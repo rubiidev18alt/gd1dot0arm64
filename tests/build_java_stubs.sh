@@ -29,7 +29,7 @@ public class Cocos2dxActivity {
 
     public static native void nativeSetPaths(String apkPath);
 
-    public static String getCocos2dxPackageName() { return "com.robtopx.geometryjump"; }
+    public static String getCocos2dxPackageName() { return "com.robtopx.geometryj102"; }
     public static String getCurrentLanguage() { return "en"; }
 
     public static synchronized void preloadBackgroundMusic(String path) {
@@ -229,14 +229,21 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
 
 public class SimpleCrypto {
-    private static final String LEGACY_PREFIX = "/data/data/com.robtopx.geometryjump";
+    private static final String[] PREFIXES = {
+        "/data/data/com.robtopx.geometryjump",
+        "/data/data/com.robtopx.geometryj102"
+    };
     private static final String SEED = "y27vyZlpIJk2C8wd";
 
     private static String resolvePath(String rawPath) {
         if (rawPath == null) return "";
         String dataDir = System.getProperty("gd102.data.dir", "");
-        if (!dataDir.isEmpty() && rawPath.startsWith(LEGACY_PREFIX)) {
-            return dataDir + rawPath.substring(LEGACY_PREFIX.length());
+        if (!dataDir.isEmpty()) {
+            for (String pfx : PREFIXES) {
+                if (rawPath.startsWith(pfx)) {
+                    return dataDir + rawPath.substring(pfx.length());
+                }
+            }
         }
         return rawPath;
     }

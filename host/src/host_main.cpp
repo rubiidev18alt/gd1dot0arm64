@@ -235,12 +235,36 @@ EXPORT_JNI void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativ
     if (apk_c) env->ReleaseStringUTFChars(apk_path_j, apk_c);
     (void)apk_path;
 
+    std::string pkg_name;
+    if (context) {
+        jclass ctx_cls = env->GetObjectClass(context);
+        if (ctx_cls) {
+            jmethodID mid = env->GetMethodID(ctx_cls, "getPackageName", "()Ljava/lang/String;");
+            if (mid) {
+                jstring pkg_j = (jstring)env->CallObjectMethod(context, mid);
+                if (!env->ExceptionCheck() && pkg_j) {
+                    const char *pkg_c = env->GetStringUTFChars(pkg_j, nullptr);
+                    if (pkg_c) {
+                        pkg_name = pkg_c;
+                        env->ReleaseStringUTFChars(pkg_j, pkg_c);
+                    }
+                    env->DeleteLocalRef(pkg_j);
+                }
+            }
+            env->ExceptionClear();
+            env->DeleteLocalRef(ctx_cls);
+        }
+    }
+
     mkdirs(data_dir);
     {
         std::lock_guard<std::mutex> clk(g_crash_lock);
         g_crash_log_path = data_dir + "/crash.log";
     }
     paths::add_mapping("/data/data/com.robtopx.geometryjump", data_dir);
+    if (!pkg_name.empty()) {
+        paths::add_mapping("/data/data/" + pkg_name, data_dir);
+    }
     write_synthetic_cpuinfo32(data_dir);
 
 #ifdef __ANDROID__
@@ -274,6 +298,7 @@ extern "C" __attribute__((visibility("default"))) bool gd102_host_boot_from_dir(
             g_crash_log_path = data_dir + "/crash.log";
         }
         paths::add_mapping("/data/data/com.robtopx.geometryjump", data_dir);
+        paths::add_mapping("/data/data/com.robtopx.geometryj102", data_dir);
         write_synthetic_cpuinfo32(data_dir);
 
         std::string dir = arm32_dir;

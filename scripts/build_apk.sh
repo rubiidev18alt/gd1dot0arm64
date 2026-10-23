@@ -7,7 +7,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ORIG_APK="${1:-$ROOT/third_party/Geometry.Dash.ver.1.02.build.4.apk}"
-OUT_APK="${2:-$ROOT/dist/GeometryDash-1.02-arm64-android16.apk}"
+PACKAGE_NAME="${GD102_PACKAGE_NAME:-com.robtopx.geometryj102}"
+APP_NAME="${GD102_APP_NAME:-gd 1.02 arm64}"
+OUT_APK="${2:-$ROOT/dist/gd-1.02-arm64-${PACKAGE_NAME}.apk}"
 
 # 1. Discover Android SDK, NDK, Build-Tools (35+/36+ for zipalign -P 16), and android.jar (API 36 preferred)
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
@@ -105,8 +107,10 @@ rm -rf "$WORK/decoded/lib/armeabi" "$WORK/decoded/lib/armeabi-v7a"
 cp "$WORK/libguestrt.so" "$WORK/decoded/assets/arm32/libguestrt.so"
 cp "$WORK/libgame_arm64.so" "$WORK/decoded/lib/arm64-v8a/libgame.so"
 
-echo "==> Applying Android 16 + ARM64 manifest & smali patches"
-python3 "$ROOT/scripts/patch_manifest_and_smali.py" "$WORK/decoded"
+echo "==> Applying Android 16 + ARM64 manifest & smali patches (package=$PACKAGE_NAME, app_name='$APP_NAME')"
+python3 "$ROOT/scripts/patch_manifest_and_smali.py" "$WORK/decoded" \
+    --package "$PACKAGE_NAME" \
+    --app-name "$APP_NAME"
 
 echo "==> Rebuilding APK via Apktool"
 java -jar "$ROOT/third_party/apktool.jar" b "$WORK/decoded" -o "$WORK/rebuilt_raw.apk"
@@ -176,10 +180,24 @@ echo "==> Signing APK (v1 + v2 + v3)"
     --out "$OUT_APK" \
     "$WORK/aligned.apk"
 
-# 10. Verify alignment, signatures, ELF64 16 KB segments, exports, and 136 game assets
+# 10. Verify alignment, signatures, package/label badging, ELF64 16 KB segments, exports, and 136 game assets
 echo "==> Verifying signed APK"
 "$BUILD_TOOLS/zipalign" -c -P 16 4 "$OUT_APK"
 "$BUILD_TOOLS/apksigner" verify --verbose "$OUT_APK"
+BADGING="$("$BUILD_TOOLS/aapt2" dump badging "$OUT_APK")"
+echo "$BADGING" | grep -E "^(package:|application-label:|launchable-activity:|native-code:)"
+echo "$BADGING" | grep -Fq "package: name='${PACKAGE_NAME}'" || {
+    echo "ERROR: APK package name does not match '${PACKAGE_NAME}'" >&2
+    exit 1
+}
+echo "$BADGING" | grep -Fq "application-label:'${APP_NAME}'" || {
+    echo "ERROR: APK application-label does not match '${APP_NAME}'" >&2
+    exit 1
+}
+echo "$BADGING" | grep -Fq "launchable-activity: name='com.robtopx.geometryjump.GeometryJump'" || {
+    echo "ERROR: APK launchable-activity missing com.robtopx.geometryjump.GeometryJump" >&2
+    exit 1
+}
 python3 "$ROOT/scripts/verify_apk.py" "$OUT_APK"
 
 rm -rf "$WORK"

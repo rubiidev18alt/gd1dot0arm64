@@ -47,6 +47,7 @@ public final class ModernPlatformHelper {
     private static final String SAVE_SEED = "y27vyZlpIJk2C8wd";
 
     private static volatile String sDataDir = null;
+    private static volatile String sPkgDataPrefix = null;
 
     private ModernPlatformHelper() {}
 
@@ -66,6 +67,10 @@ public final class ModernPlatformHelper {
             dataDir = app.getFilesDir().getParentFile().getAbsolutePath();
         }
         sDataDir = dataDir;
+        String pkg = app.getPackageName();
+        if (pkg != null && !pkg.isEmpty()) {
+            sPkgDataPrefix = "/data/data/" + pkg;
+        }
         nativeBridgeInit(app, app.getAssets(), apkPath, dataDir);
         applyImmersive(activity);
     }
@@ -73,12 +78,16 @@ public final class ModernPlatformHelper {
     public static String resolveSavePath(String path) {
         if (path == null) return "";
         String dir = sDataDir;
-        if (dir != null && !dir.isEmpty() && path.startsWith(LEGACY_DATA_PREFIX)) {
-            char next = path.length() > LEGACY_DATA_PREFIX.length()
-                    ? path.charAt(LEGACY_DATA_PREFIX.length())
-                    : '/';
-            if (next == '/') {
-                return dir + path.substring(LEGACY_DATA_PREFIX.length());
+        if (dir != null && !dir.isEmpty()) {
+            for (String prefix : new String[]{LEGACY_DATA_PREFIX, sPkgDataPrefix}) {
+                if (prefix != null && !prefix.isEmpty() && path.startsWith(prefix)) {
+                    char next = path.length() > prefix.length()
+                            ? path.charAt(prefix.length())
+                            : '/';
+                    if (next == '/') {
+                        return dir + path.substring(prefix.length());
+                    }
+                }
             }
         }
         return path;

@@ -1,6 +1,6 @@
 # Geometry Dash 1.02 — Native ARM64 Port for Modern Android (Android 16 / 16 KB Pages)
 
-A complete, 100%-accurate native **ARM64 (`arm64-v8a`)** port of **Geometry Dash 1.02 (build 4)** (`com.robtopx.geometryjump`) built for modern 64-bit-only Android devices — including **Android 16 (API 36)**, **ARMv9 CPUs with hardware AArch32 execution removed** (Google Pixel 7 / 8 / 9 / 10, Snapdragon 8 Gen 3 / 8 Elite, Tensor G3–G5), and **16 KB kernel page sizes**.
+A complete, 100%-accurate native **ARM64 (`arm64-v8a`)** port of **Geometry Dash 1.02 (build 4)** packaged as **`com.robtopx.geometryj102`** (**`gd 1.02 arm64`**) so it installs side-by-side alongside regular Geometry Dash (`com.robtopx.geometryjump`) with isolated save data — built for modern 64-bit-only Android devices including **Android 16 (API 36)**, **ARMv9 CPUs with hardware AArch32 execution removed** (Google Pixel 7 / 8 / 9 / 10, Snapdragon 8 Gen 3 / 8 Elite, Tensor G3–G5), and **16 KB kernel page sizes**.
 
 [![Download Latest APK Release](https://img.shields.io/github/v/release/rubiidev18alt/gd1dot0arm64?label=Download%20ARM64%20APK&style=for-the-badge)](https://github.com/rubiidev18alt/gd1dot0arm64/releases/latest)
 
@@ -62,13 +62,15 @@ export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.2.12479018
 The signed, 16 KB-aligned (`zipalign -P 16 4`), v1+v2+v3 verified APK is written to:
 
 ```text
-dist/GeometryDash-1.02-arm64-android16.apk
+dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
 ```
+
+(You can also override `GD102_PACKAGE_NAME` and `GD102_APP_NAME` before running `./scripts/build_apk.sh` if you want a custom package ID or label.)
 
 To verify any built APK manually:
 
 ```bash
-python3 scripts/verify_apk.py dist/GeometryDash-1.02-arm64-android16.apk
+python3 scripts/verify_apk.py dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
 ```
 
 ---

@@ -5,6 +5,7 @@ Deterministic Android 16 (API 36) + ARM64 manifest, apktool.yml, and smali patch
 for Geometry Dash 1.02 (build 4, com.robtopx.geometryjump).
 """
 
+import argparse
 import pathlib
 import re
 import sys
@@ -43,10 +44,73 @@ def patch_apktool_yml(apk_dir: pathlib.Path) -> None:
     yml_path.write_text(txt, encoding="utf-8")
 
 
-def patch_manifest(apk_dir: pathlib.Path) -> None:
+def qualify_class(cls_name: str, base_pkg: str) -> str:
+    if not cls_name:
+        return cls_name
+    if cls_name.startswith("."):
+        return f"{base_pkg}{cls_name}"
+    if "." not in cls_name:
+        return f"{base_pkg}.{cls_name}"
+    return cls_name
+
+
+def rewrite_pkg_prefix(val: str, old_pkg: str, new_pkg: str) -> str:
+    if val == old_pkg:
+        return new_pkg
+    if val.startswith(old_pkg + "."):
+        return new_pkg + val[len(old_pkg) :]
+    return val
+
+
+def patch_strings_and_res_namespaces(
+    apk_dir: pathlib.Path, orig_pkg: str, new_pkg: str, app_label: str
+) -> None:
+    res_dir = apk_dir / "res"
+    if not res_dir.is_dir():
+        return
+
+    # 1. Set app_name across res/values*/strings.xml so launcher, installer, and Settings
+    #    display the requested application label (e.g. "gd 1.02 arm64").
+    values_default = res_dir / "values" / "strings.xml"
+    string_files = sorted(res_dir.glob("values*/strings.xml"))
+    if values_default not in string_files and values_default.parent.is_dir():
+        values_default.write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n',
+            encoding="utf-8",
+        )
+        string_files.append(values_default)
+
+    for s_path in string_files:
+        tree = ET.parse(s_path)
+        root = tree.getroot()
+        found = False
+        for elem in root.findall("string"):
+            if elem.get("name") == "app_name":
+                elem.text = app_label
+                found = True
+        if not found and s_path == values_default:
+            el = ET.SubElement(root, "string")
+            el.set("name", "app_name")
+            el.text = app_label
+        tree.write(s_path, encoding="utf-8", xml_declaration=True)
+
+    # 2. Rewrite any legacy custom XML schema URI referencing orig_pkg so aapt2 links cleanly.
+    if new_pkg != orig_pkg:
+        old_uri = f"http://schemas.android.com/apk/res/{orig_pkg}"
+        new_uri = f"http://schemas.android.com/apk/res/{new_pkg}"
+        for xml_file in res_dir.rglob("*.xml"):
+            raw = xml_file.read_text(encoding="utf-8", errors="replace")
+            if old_uri in raw:
+                xml_file.write_text(raw.replace(old_uri, new_uri), encoding="utf-8")
+
+
+def patch_manifest(apk_dir: pathlib.Path, new_pkg: str, app_label: str) -> None:
     manifest_path = apk_dir / "AndroidManifest.xml"
     tree = ET.parse(manifest_path)
     root = tree.getroot()
+    orig_pkg = root.get("package", "com.robtopx.geometryjump")
+
+    patch_strings_and_res_namespaces(apk_dir, orig_pkg, new_pkg, app_label)
 
     # Remove legacy invasive/deprecated permissions that trigger Android 10-16 warnings or denials.
     drop_perms = {
@@ -61,6 +125,54 @@ def patch_manifest(apk_dir: pathlib.Path) -> None:
     app = root.find("application")
     if app is None:
         raise RuntimeError("AndroidManifest.xml missing <application>")
+
+    # Expand relative component class names against orig_pkg BEFORE changing <manifest package="...">,
+    # and rewrite any custom permissions/authorities so this APK co-installs cleanly alongside
+    # regular Geometry Dash (com.robtopx.geometryjump) with zero PackageManager conflicts.
+    if new_pkg != orig_pkg:
+        app_cls = app.get(attr_key("name"))
+        if app_cls:
+            app.set(attr_key("name"), qualify_class(app_cls, orig_pkg))
+
+        for comp_tag in ("activity", "activity-alias", "service", "receiver", "provider"):
+            for comp in app.findall(comp_tag):
+                cname = comp.get(attr_key("name"))
+                if cname:
+                    comp.set(attr_key("name"), qualify_class(cname, orig_pkg))
+                if comp_tag == "activity-alias":
+                    targ = comp.get(attr_key("targetActivity"))
+                    if targ:
+                        comp.set(attr_key("targetActivity"), qualify_class(targ, orig_pkg))
+                if comp_tag == "provider":
+                    auths = comp.get(attr_key("authorities"))
+                    if auths:
+                        comp.set(
+                            attr_key("authorities"),
+                            ";".join(
+                                rewrite_pkg_prefix(a, orig_pkg, new_pkg) for a in auths.split(";")
+                            ),
+                        )
+
+        for elem in root.iter():
+            if elem.tag in (
+                "permission",
+                "uses-permission",
+                "uses-permission-sdk-23",
+                "action",
+                "category",
+            ):
+                ename = elem.get(attr_key("name"))
+                if ename:
+                    elem.set(attr_key("name"), rewrite_pkg_prefix(ename, orig_pkg, new_pkg))
+            for attr_n in ("permission", "taskAffinity"):
+                aval = elem.get(attr_key(attr_n))
+                if aval:
+                    elem.set(attr_key(attr_n), rewrite_pkg_prefix(aval, orig_pkg, new_pkg))
+
+        root.set("package", new_pkg)
+
+    # Set application label to @string/app_name (updated above in strings.xml).
+    app.set(attr_key("label"), "@string/app_name")
 
     # Android 16 + 16 KB page alignment + Boomlings HTTP cleartext compatibility:
     app.set(attr_key("extractNativeLibs"), "false")
@@ -84,11 +196,18 @@ def patch_manifest(apk_dir: pathlib.Path) -> None:
         if "chartboost" in name.lower():
             app.remove(act)
 
-    # Patch main launcher activity (.GeometryJump).
+    # Patch main launcher activity (.GeometryJump / com.robtopx.geometryjump.GeometryJump)
+    # and ensure every Android 12+ (API 31-36) component with an <intent-filter> declares android:exported.
+    for comp_tag in ("activity", "activity-alias", "service", "receiver"):
+        for comp in app.findall(comp_tag):
+            if comp.find("intent-filter") is not None and comp.get(attr_key("exported")) is None:
+                comp.set(attr_key("exported"), "false")
+
     patched_main = False
     for act in app.findall("activity"):
         name = act.get(attr_key("name"), "")
-        if name in (".GeometryJump", "com.robtopx.geometryjump.GeometryJump"):
+        if name in (".GeometryJump", "com.robtopx.geometryjump.GeometryJump", f"{orig_pkg}.GeometryJump"):
+            act.set(attr_key("label"), "@string/app_name")
             act.set(attr_key("exported"), "true")
             act.set(attr_key("screenOrientation"), "sensorLandscape")
             act.set(
@@ -312,25 +431,9 @@ def patch_base_robtop(smali_root: pathlib.Path) -> None:
     txtr = replace_method(
         txtr,
         ".method public static openRate(Landroid/content/Context;)V",
-        """    .locals 2
+        """    .locals 1
 
-    new-instance v0, Ljava/lang/StringBuilder;
-
-    const-string v1, "https://play.google.com/store/apps/details?id="
-
-    invoke-direct {v0, v1}, Ljava/lang/StringBuilder;-><init>(Ljava/lang/String;)V
-
-    invoke-virtual {p0}, Landroid/content/Context;->getPackageName()Ljava/lang/String;
-
-    move-result-object v1
-
-    invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
-
-    move-result-object v0
-
-    invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
-
-    move-result-object v0
+    const-string v0, "https://play.google.com/store/apps/details?id=com.robtopx.geometryjump"
 
     invoke-static {p0, v0}, Lcom/robtopx/geometryjump/ModernPlatformHelper;->safeOpenUrl(Landroid/content/Context;Ljava/lang/String;)V
 
@@ -463,22 +566,38 @@ def patch_simple_crypto(smali_root: pathlib.Path) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <apktool_decoded_dir>", file=sys.stderr)
-        sys.exit(2)
-    apk_dir = pathlib.Path(sys.argv[1]).resolve()
+    parser = argparse.ArgumentParser(
+        description="Patch Geometry Dash 1.02 manifest, resources, and smali for Android 16 ARM64."
+    )
+    parser.add_argument("apk_dir", type=pathlib.Path, help="Apktool decoded directory")
+    parser.add_argument(
+        "--package",
+        default="com.robtopx.geometryj102",
+        help="Target Android applicationId / manifest package name (default: com.robtopx.geometryj102)",
+    )
+    parser.add_argument(
+        "--app-name",
+        default="gd 1.02 arm64",
+        help="Target Android application label (default: 'gd 1.02 arm64')",
+    )
+    args = parser.parse_args()
+
+    apk_dir = args.apk_dir.resolve()
     smali_root = apk_dir / "smali"
     if not smali_root.is_dir():
         raise RuntimeError(f"Decoded smali directory not found: {smali_root}")
 
     patch_apktool_yml(apk_dir)
-    patch_manifest(apk_dir)
+    patch_manifest(apk_dir, args.package, args.app_name)
     patch_geometry_jump(smali_root)
     patch_base_robtop(smali_root)
     patch_chartboost_manager(smali_root)
     patch_cocos2dx_bitmap_and_renderer(smali_root)
     patch_simple_crypto(smali_root)
-    print(f"Successfully patched manifest, apktool.yml, and smali in {apk_dir}")
+    print(
+        f"Successfully patched manifest (package={args.package}, label='{args.app_name}'), "
+        f"apktool.yml, and smali in {apk_dir}"
+    )
 
 
 if __name__ == "__main__":
