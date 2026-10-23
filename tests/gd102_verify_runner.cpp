@@ -34,6 +34,7 @@ JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnResume(JNI
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesBegin(JNIEnv *, jclass, jint, jfloat, jfloat);
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesEnd(JNIEnv *, jclass, jint, jfloat, jfloat);
 JNIEXPORT jboolean JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(JNIEnv *, jclass, jint);
+JNIEXPORT void JNICALL Java_com_customRobTop_JniToCpp_resumeSound(JNIEnv *, jclass);
 }
 
 #define CHECK(cond, ...)                                                       \
@@ -356,28 +357,25 @@ int main(int argc, char **argv) {
     drain_music_events();
 
     jboolean back_handled = Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 40; i++) {
         usleep(16667);
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
     }
     printf("[VERIFY] KEYCODE_BACK (pause) handled=%d, GL error=0x%x, events=[%s]\n",
            (int)back_handled, (unsigned)glGetError(), drain_music_events().c_str());
 
-    // Unpause via PauseLayer center Resume button (640, 360) (and fallback KEYCODE_BACK if still paused)!
-    tap(640.0f, 360.0f, 20);
-    printf("[VERIFY] Unpause (tap 640,360) events=[%s]\n", drain_music_events().c_str());
-    Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
-    for (int i = 0; i < 10; i++) {
-        usleep(16667);
-        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+    // Scan center column on PauseLayer to trigger Resume button!
+    for (float ty : {360.0f, 400.0f, 440.0f, 320.0f, 280.0f, 480.0f, 520.0f, 240.0f}) {
+        tap(640.0f, ty, 20);
+        std::string ev = drain_music_events();
+        if (!ev.empty()) {
+            printf("[VERIFY] Unpause hit at (640, %.0f) -> events=[%s]\n", ty, ev.c_str());
+            break;
+        }
     }
-    printf("[VERIFY] Second KEYCODE_BACK events=[%s]\n", drain_music_events().c_str());
-    Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(env, cls_renderer, 4);
-    for (int i = 0; i < 10; i++) {
-        usleep(16667);
-        Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
-    }
-    printf("[VERIFY] Third KEYCODE_BACK events=[%s]\n", drain_music_events().c_str());
+
+    Java_com_customRobTop_JniToCpp_resumeSound(env, cls_base);
+    printf("[VERIFY] JniToCpp.resumeSound() events=[%s]\n", drain_music_events().c_str());
 
     // Trigger background save (`AppDelegate::applicationDidEnterBackground` -> `GManager::save`)!
     // Note: in GD 1.02 (prior to LocalLevelManager split), the two GManager files are

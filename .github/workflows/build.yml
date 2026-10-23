@@ -122,17 +122,18 @@ jobs:
                   emit(p.stem, m_clean)
 
               for rel, tag in [
-                  ("org/cocos2dx/lib/Cocos2dxActivity.smali", "Cocos2dxActivityMusic"),
-                  ("org/cocos2dx/lib/Cocos2dxHelper.smali", "Cocos2dxHelperMusic"),
-                  ("com/customRobTop/BaseRobTopActivity.smali", "BaseRobTopPauseResume"),
-                  ("com/robtopx/geometryjump/GeometryJump.smali", "GeometryJumpOrig"),
+                  ("org/cocos2dx/lib/p.smali", "Cocos2dxMusic_p"),
+                  ("org/cocos2dx/lib/Cocos2dxSound.smali", "Cocos2dxSound"),
+                  ("com/customRobTop/DefaultRobTopActivity.smali", "DefaultRobTop"),
               ]:
                   fp = d / rel
                   if fp.exists():
                       tx = fp.read_text()
-                      ms = re.findall(r"\.method [^\n]*(?:Music|Pause|Resume|Sound|Time|onStart|onStop)[^\n]*\n.*?\.end method", tx, re.S)
-                      cl = "\n\n".join("\n".join(l for l in blk.splitlines() if not l.strip().startswith(".line")) for blk in ms)
-                      emit(tag, cl or tx[:2000])
+                      cl = "\n".join(l for l in tx.splitlines() if not l.strip().startswith(".line"))
+                      emit(tag, cl)
+                  else:
+                      all_lib = ", ".join(x.name for x in sorted((d / "org/cocos2dx/lib").glob("*.smali")))
+                      emit(tag + "_missing", all_lib)
           except Exception:
               print("::notice title=DiagErr::" + traceback.format_exc().replace("\n", "%0A"))
           PYEOF
