@@ -62,7 +62,11 @@ JNIEnv *host_env() {
     if (t_state.env) return t_state.env;
     JNIEnv *e = nullptr;
     if (g_vm->GetEnv((void **)&e, JNI_VERSION_1_6) != JNI_OK) {
+#ifdef __ANDROID__
         if (g_vm->AttachCurrentThread(&e, nullptr) != JNI_OK) fatal("AttachCurrentThread failed");
+#else
+        if (g_vm->AttachCurrentThread((void **)&e, nullptr) != JNI_OK) fatal("AttachCurrentThread failed");
+#endif
         t_state.attached_by_us = true;
     }
     t_state.env = e;
