@@ -261,6 +261,9 @@ jobs:
     name: Verify Native ARM64 Execution & GLES2 Rendering
     runs-on: ubuntu-24.04-arm
     needs: build-apk
+    # Explicit: an SKIPPED ancestor (the currently disabled level-archive job) would
+    # otherwise silently skip this job even though build-apk succeeded.
+    if: ${{ !cancelled() && !failure() && needs.build-apk.result == 'success' }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -433,10 +436,13 @@ jobs:
       - build-apk
       - verify-arm64-runtime
     if: >-
-      github.ref == 'refs/heads/master' ||
+      !cancelled() && !failure() &&
+      needs.build-apk.result == 'success' &&
+      needs.verify-arm64-runtime.result == 'success' &&
+      (github.ref == 'refs/heads/master' ||
       startsWith(github.ref, 'refs/heads/arena/') ||
       startsWith(github.ref, 'refs/tags/v') ||
-      inputs.publish_release == true
+      inputs.publish_release == true)
     steps:
       - name: Download verified ARM64 APK artifact
         uses: actions/download-artifact@v4
