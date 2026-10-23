@@ -73,21 +73,20 @@ jobs:
           strings -a "$SO" | grep -iE "stereo madness|back on track|polargeist|dry out|base after base|can.t let go|^jumper$|time machine" | sort -u | head -20
 
       - name: Decode framework smali (for the text-layout port)
+        continue-on-error: true
+        timeout-minutes: 12
         run: |
-          set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq openjdk-17-jre-headless >/dev/null
-          curl -fsSL -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar
-          cd /tmp && rm -rf decoded && java -jar /tmp/apktool.jar d -f -q --no-res --no-src -o /tmp/decoded /tmp/gd_cache/orig.apk 2>/dev/null || \
-            java -jar /tmp/apktool.jar d -f -q -o /tmp/decoded /tmp/gd_cache/orig.apk
+          set -uo pipefail
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq openjdk-17-jre-headless >/dev/null 2>&1 || true
+          curl -fsSL --retry 2 -o /tmp/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar || exit 0
+          java -jar /tmp/apktool.jar d -f -q -o /tmp/decoded /tmp/gd_cache/orig.apk || exit 0
           mkdir -p "$GITHUB_WORKSPACE/tools/analysis/smali"
-          for F in org/cocos2dx/lib/Cocos2dxBitmap.smali org/cocos2dx/lib/Cocos2dxRenderer.smali org/cocos2dx/lib/Cocos2dxHelper.smali; do
-            if [ -f "/tmp/decoded/smali/$F" ]; then
-              cp "/tmp/decoded/smali/$F" "$GITHUB_WORKSPACE/tools/analysis/smali/$(basename "$F")"
-            elif [ -f "/tmp/decoded/smali_classes2/$F" ]; then
-              cp "/tmp/decoded/smali_classes2/$F" "$GITHUB_WORKSPACE/tools/analysis/smali/$(basename "$F")"
-            fi
+          for F in Cocos2dxBitmap Cocos2dxRenderer Cocos2dxHelper; do
+            SRC="$(find /tmp/decoded -name "$F.smali" -print -quit)"
+            if [ -n "$SRC" ]; then cp "$SRC" "$GITHUB_WORKSPACE/tools/analysis/smali/"; fi
           done
-          ls -la "$GITHUB_WORKSPACE/tools/analysis/smali"
+          ls -la "$GITHUB_WORKSPACE/tools/analysis/smali" || true
 
       - name: Commit facts file
         run: |
@@ -130,6 +129,13 @@ jobs:
             echo;
             echo "## libgame.so level-name-ish strings";
             strings -a "$SO" | grep -iE "stereo|polargeist|dry out|base after|let go|jumper|time machine|cycles|xstep|clutterfunk|fingerdash" | sort -u | head -40;
+            echo;
+            echo "## libgame.so symbols";
+            readelf -sW "$SO" 2>/dev/null | awk 'NR>3 && $4=="FUNC" && $7!="UND" {print $8}' | sort -u > /tmp/syms.txt;
+            echo "exported_func_count $(wc -l < /tmp/syms.txt)";
+            grep -E "PlayLayer|GameObject|Portal|LevelTools|GameLevelManager|LevelSelect|ObjectToolbox|CCLabel|CCTexture|GameToolbox" /tmp/syms.txt | head -60;
+            echo "total_dynsym $(readelf -sW "$SO" | grep -c FUNC)";
+            echo "has_cxx_demangled $(readelf -sW "$SO" | grep -c _ZN)";
             echo;
             echo "## libgame.so achievement strings";
             strings -a "$SO" | grep -iE "^ach|achievement" | sort -u | head -40;
