@@ -1,0 +1,16 @@
+# Build artifacts & fetched dependencies
+build/
+out/
+dist/
+third_party/dynarmic/
+third_party/boost/
+third_party/zlib/
+third_party/apktool.jar
+*.apk
+*.idsig
+*.keystore
+*.so
+*.o
+*.a
+__pycache__/
+.DS_Store
