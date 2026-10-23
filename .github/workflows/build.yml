@@ -27,13 +27,101 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-apk:
-    name: Build Android 16 ARM64 APK
+  build-level-archive:
+    name: Build Private GD 1.0 Level Archive (GD History)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Restore cached GD History archive build inputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/gdhistory_cache
+            third_party/levels_1_0.bin
+          key: gdhistory-1.0-levels-v2-${{ hashFiles('scripts/build_gdhistory_db.py') }}
+
+      - name: Restore cached original Geometry Dash 1.02 APK
+        uses: actions/cache@v4
+        with:
+          path: /tmp/gd_cache
+          key: gd-1.02-build4-orig-v1
+
+      - name: Probe GD History API availability
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 gd1dot0arm64-archive-builder/1.0"
+          for URL in \
+            "https://history.geometrydash.eu/api/v1/counts/" \
+            "https://history.geometrydash.eu/api/v1/level/128/" \
+            "https://history.geometrydash.eu/level/128/10988023/download/" \
+            "https://history.geometrydash.eu/level/128/download/?type=gmd"; do
+            CODE="$(curl -s -o /tmp/probe_body -w '%{http_code}' --max-time 25 -A "$UA" \
+              -e "https://history.geometrydash.eu/" "$URL" || echo ERR)"
+            SIZE="$(stat -c%s /tmp/probe_body 2>/dev/null || echo 0)"
+            echo "curl: $CODE ($SIZE bytes) $URL"
+            echo "::notice title=GDHistory probe::$CODE ($SIZE bytes) $URL"
+          done
+
+      - name: Assemble private offline GD 1.0 level archive (IDs 128..1941)
+        run: |
+          set -euo pipefail
+          mkdir -p third_party
+          if [ -f /tmp/gd_cache/orig.apk ]; then
+            cp /tmp/gd_cache/orig.apk third_party/Geometry.Dash.ver.1.02.build.4.apk
+          elif [ -f /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk ]; then
+            cp /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk third_party/Geometry.Dash.ver.1.02.build.4.apk
+          else
+            echo "::warning title=GD History archive::original APK unavailable, skipping frame validation"
+          fi
+
+          # 1. Assemble the private offline Geometry Dash 1.0 level archive (IDs 128..1941)
+          #    from GD History's earliest archived version of every preserved level.
+          if ! (
+            set -euo pipefail
+            python3 scripts/build_gdhistory_db.py \
+              --out third_party/levels_1_0.bin \
+              --orig-apk third_party/Geometry.Dash.ver.1.02.build.4.apk \
+              --cache-dir /tmp/gdhistory_cache \
+              --workers 3
+          ) > /tmp/gdhistory.log 2>&1; then
+            python3 - /tmp/gdhistory.log "GD History archive build failed" << 'PYEOF'
+          import sys
+          raw = open(sys.argv[1], errors="replace").read().splitlines()
+          txt = "\n".join(raw[-80:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          PYEOF
+            cat /tmp/gdhistory.log
+            exit 1
+          fi
+          cat /tmp/gdhistory.log
+
+
+      - name: Upload GD 1.0 level archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gd102-levels-archive
+          path: third_party/levels_1_0.bin
+          if-no-files-found: error
+
+  build-apk:
+    name: Build Android 16 ARM64 APK
+    runs-on: ubuntu-24.04
+    needs: build-level-archive
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download GD 1.0 level archive
+        uses: actions/download-artifact@v4
+        with:
+          name: gd102-levels-archive
+          path: third_party
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -55,14 +143,6 @@ jobs:
             third_party/zlib
             third_party/apktool.jar
           key: gd102-thirdparty-v1-${{ hashFiles('patches/*.patch', 'scripts/fetch_deps.sh') }}
-
-      - name: Restore cached GD History archive build inputs
-        uses: actions/cache@v4
-        with:
-          path: |
-            /tmp/gdhistory_cache
-            third_party/levels_1_0.bin
-          key: gdhistory-1.0-levels-v1-${{ hashFiles('scripts/build_gdhistory_db.py') }}
 
       - name: Install host build dependencies & Android API 36 SDK tools
         run: |
@@ -92,27 +172,6 @@ jobs:
           APK_NAME="gd-1.02-arm64-com.robtopx.geometryj102.apk"
           ORIG_PKG_APK="GeometryDash-1.02-arm64-android16.apk"
           GDPS_APK="gd-1.02-gdps-com.robtopx.geomgdps102.apk"
-
-          # 1. Assemble the private offline Geometry Dash 1.0 level archive (IDs 128..1941)
-          #    from GD History's earliest archived version of every preserved level.
-          if ! (
-            set -euo pipefail
-            python3 scripts/build_gdhistory_db.py \
-              --out third_party/levels_1_0.bin \
-              --orig-apk third_party/Geometry.Dash.ver.1.02.build.4.apk \
-              --cache-dir /tmp/gdhistory_cache
-          ) > /tmp/gdhistory.log 2>&1; then
-            python3 - /tmp/gdhistory.log "GD History archive build failed" << 'PYEOF'
-          import sys
-          raw = open(sys.argv[1], errors="replace").read().splitlines()
-          txt = "\n".join(raw[-80:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-          for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
-              print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
-          PYEOF
-            cat /tmp/gdhistory.log
-            exit 1
-          fi
-          cat /tmp/gdhistory.log
 
           if ! (
             set -euo pipefail
@@ -182,7 +241,7 @@ jobs:
     name: Verify Native ARM64 Execution & GLES2 Rendering
     runs-on: ubuntu-24.04-arm
     needs: build-apk
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

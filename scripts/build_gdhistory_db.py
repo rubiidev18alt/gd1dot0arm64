@@ -55,8 +55,25 @@ HTTP_HEADERS = {
     "Accept-Encoding": "identity",
     "Connection": "close",
 }
-HTTP_MIN_INTERVAL = 0.08
+HTTP_MIN_INTERVAL = 0.45
 _HTTP_LOCK = threading.Lock()
+_ADAPTIVE_DELAY = [HTTP_MIN_INTERVAL]
+
+
+def _note_response(ok: bool) -> None:
+    """Throttle adaptively: back off hard on 403/429 (Cloudflare), relax slowly on success."""
+    with _HTTP_LOCK:
+        if ok:
+            _ADAPTIVE_DELAY[0] = max(0.35, _ADAPTIVE_DELAY[0] * 0.92)
+        else:
+            _ADAPTIVE_DELAY[0] = min(6.0, _ADAPTIVE_DELAY[0] * 1.8)
+
+
+def _pace() -> None:
+    with _HTTP_LOCK:
+        delay = _ADAPTIVE_DELAY[0]
+    if delay > 0:
+        time.sleep(delay)
 
 # Complete Geometry Dash 1.02 ObjectToolbox object ID -> GJ_GameSheet.plist frame table.
 GD10_OBJECT_FRAMES: dict[int, str] = {
@@ -195,29 +212,31 @@ def http_get_via_curl(url: str, timeout: float) -> bytes | None:
 
 
 def http_get_bytes(url: str, retries: int = 6, timeout: float = 30.0) -> bytes | None:
-    delay = 1.5
     for attempt in range(retries):
-        # Politely rate-limit: at most one request per HTTP_MIN_INTERVAL across all workers.
-        with _HTTP_LOCK:
-            time.sleep(HTTP_MIN_INTERVAL)
+        _pace()
         req = urllib.request.Request(url, headers=HTTP_HEADERS)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read()
+                body = resp.read()
+                _note_response(True)
+                return body
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
             if e.code in (403, 408, 425, 429, 500, 502, 503, 504):
-                body = http_get_via_curl(url, timeout)
-                if body is not None:
-                    return body
+                _note_response(False)
+                if attempt >= 1:
+                    body = http_get_via_curl(url, timeout)
+                    if body is not None:
+                        return body
                 if attempt + 1 < retries:
-                    time.sleep(delay * (attempt + 1))
+                    time.sleep(min(6.0, 1.0 + attempt))
                     continue
             raise RuntimeError(f"GET {url} -> HTTP {e.code}") from e
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            _note_response(False)
             if attempt + 1 < retries:
-                time.sleep(delay * (attempt + 1))
+                time.sleep(min(6.0, 1.0 + attempt))
                 continue
             raise RuntimeError(f"GET {url} failed: {e!r}") from e
     return None
@@ -582,7 +601,10 @@ def discover_archived_1_0_ids(
 
 
 def process_single_level(
-    online_id: int, cache_dir: pathlib.Path | None, valid_obj_ids: set[int]
+    online_id: int,
+    cache_dir: pathlib.Path | None,
+    valid_obj_ids: set[int],
+    scan_versions: bool = False,
 ) -> dict | None:
     lvl = fetch_or_load_level_json(online_id, cache_dir)
     if not lvl:
@@ -625,9 +647,14 @@ def process_single_level(
         earliest_song = cs if isinstance(cs, int) and 0 <= cs <= 6 else 1
 
     # Download & inspect each distinct candidate version (typically 1, occasionally 2-3)
-    # so we reliably select the earliest archived version.
+    # so we reliably select the earliest archived version. In fast mode only the earliest
+    # archived revision is fetched (keeps the public GD History API load low).
+    ordered_records = sorted(by_hash.items(), key=lambda kv: meta_sort_key(kv[1]))
+    if not scan_versions:
+        ordered_records = ordered_records[:1]
+
     candidates: list[tuple[tuple, dict, str, bool, int]] = []
-    for _, cand_rec in by_hash.items():
+    for _, cand_rec in ordered_records:
         rec_id = cand_rec.get("id")
         if not isinstance(rec_id, int):
             continue
@@ -869,7 +896,13 @@ def main() -> None:
     ap.add_argument("--out", required=True, type=pathlib.Path, help="Output binary DB path (levels_1_0.bin)")
     ap.add_argument("--cache-dir", type=pathlib.Path, default=None, help="Directory to cache GDHistory responses")
     ap.add_argument("--orig-apk", type=pathlib.Path, default=None, help="Original GD 1.02 APK for frame validation")
-    ap.add_argument("--workers", type=int, default=4, help="Concurrent HTTP workers (default: 4)")
+    ap.add_argument("--workers", type=int, default=3, help="Concurrent HTTP workers (default: 3)")
+    ap.add_argument(
+        "--scan-versions",
+        action="store_true",
+        help="Download every distinct archived revision of each level and prefer a pure-1.0 one "
+        "(more requests; default fetches only the earliest archived revision)",
+    )
     ap.add_argument("--min-levels", type=int, default=400, help="Minimum expected archived levels (default: 400)")
     ap.add_argument(
         "--exclude-deleted",
@@ -908,7 +941,9 @@ def main() -> None:
     levels: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
         futs = {
-            pool.submit(process_single_level, oid, args.cache_dir, valid_obj_ids): oid
+            pool.submit(
+                process_single_level, oid, args.cache_dir, valid_obj_ids, args.scan_versions
+            ): oid
             for oid in archived_ids
         }
         done_cnt = 0
@@ -935,7 +970,7 @@ def main() -> None:
         retry_failed: list[int] = []
         for oid in failed:
             try:
-                res = process_single_level(oid, args.cache_dir, valid_obj_ids)
+                res = process_single_level(oid, args.cache_dir, valid_obj_ids, args.scan_versions)
             except Exception as exc:
                 print(f"  [error] ID {oid} (retry): {exc!r}", file=sys.stderr)
                 retry_failed.append(oid)
