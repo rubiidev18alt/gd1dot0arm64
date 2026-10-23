@@ -16,10 +16,10 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/random.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -644,9 +644,23 @@ float t_copysignf(float a, float b) { return copysignf(a, b); }
 double t_copysign(double a, double b) { return copysign(a, b); }
 
 // ---------------------------------------------------------------- CSPRNG (arc4random)
+ssize_t host_getrandom(void *buf, size_t len) {
+#ifdef SYS_getrandom
+    long r = syscall(SYS_getrandom, buf, len, 0);
+    if (r > 0) return (ssize_t)r;
+#endif
+    int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t n = ::read(fd, buf, len);
+        ::close(fd);
+        if (n > 0) return n;
+    }
+    return -1;
+}
+
 u32 t_arc4random() {
     u32 val = 0;
-    if (getrandom(&val, sizeof(val), 0) == (ssize_t)sizeof(val)) return val;
+    if (host_getrandom(&val, sizeof(val)) == (ssize_t)sizeof(val)) return val;
     struct timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     val = (u32)(ts.tv_nsec ^ (ts.tv_sec * 2654435761ULL));
@@ -657,7 +671,7 @@ void t_arc4random_buf(G<void> buf, u32 n) {
     u8 *p = (u8 *)buf.get();
     u32 rem = n;
     while (rem > 0) {
-        ssize_t r = getrandom(p, rem, 0);
+        ssize_t r = host_getrandom(p, rem);
         if (r <= 0) {
             for (u32 i = 0; i < rem; i++) p[i] = (u8)t_arc4random();
             return;
