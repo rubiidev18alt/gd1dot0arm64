@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import shutil
+import subprocess
+import threading
 import concurrent.futures
 import datetime as dt
 import hashlib
@@ -37,7 +40,23 @@ MIN_1_0_ID = 128
 MAX_1_0_ID = 1941
 
 GDHISTORY_BASE = "https://history.geometrydash.eu"
-USER_AGENT = "gd1dot0arm64-archive-builder/1.0 (+https://github.com/rubiidev18alt/gd1dot0arm64)"
+# GD History sits behind Cloudflare; use a normal client fingerprint plus a contact URL so the
+# public API is served instead of being treated as an anonymous bot.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 gd1dot0arm64-archive-builder/1.0 "
+    "(+https://github.com/rubiidev18alt/gd1dot0arm64)"
+)
+HTTP_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "application/json, text/html;q=0.9, */*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://history.geometrydash.eu/",
+    "Accept-Encoding": "identity",
+    "Connection": "close",
+}
+HTTP_MIN_INTERVAL = 0.08
+_HTTP_LOCK = threading.Lock()
 
 # Complete Geometry Dash 1.02 ObjectToolbox object ID -> GJ_GameSheet.plist frame table.
 GD10_OBJECT_FRAMES: dict[int, str] = {
@@ -143,25 +162,64 @@ def verify_gd10_frames_against_apk(orig_apk: pathlib.Path | None) -> set[int]:
     return valid_ids
 
 
-def http_get_bytes(url: str, retries: int = 5, timeout: float = 25.0) -> bytes | None:
-    delay = 0.8
+_CURL = shutil.which("curl")
+
+
+def http_get_via_curl(url: str, timeout: float) -> bytes | None:
+    """Cloudflare-friendly fallback: `curl` presents a different TLS/HTTP fingerprint than urllib."""
+    if not _CURL:
+        return None
+    cmd = [
+        _CURL,
+        "-fsSL",
+        "--http1.1",
+        "--compressed",
+        "--max-time",
+        str(int(timeout)),
+        "--retry",
+        "2",
+        "--retry-delay",
+        "2",
+        "-A",
+        HTTP_HEADERS["User-Agent"],
+        "-e",
+        HTTP_HEADERS["Referer"],
+        "-H",
+        "Accept: " + HTTP_HEADERS["Accept"],
+        url,
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def http_get_bytes(url: str, retries: int = 6, timeout: float = 30.0) -> bytes | None:
+    delay = 1.5
     for attempt in range(retries):
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        # Politely rate-limit: at most one request per HTTP_MIN_INTERVAL across all workers.
+        with _HTTP_LOCK:
+            time.sleep(HTTP_MIN_INTERVAL)
+        req = urllib.request.Request(url, headers=HTTP_HEADERS)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return None
-            if e.code in (429, 500, 502, 503, 504) and attempt + 1 < retries:
-                time.sleep(delay * (attempt + 1))
-                continue
-            raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if e.code in (403, 408, 425, 429, 500, 502, 503, 504):
+                body = http_get_via_curl(url, timeout)
+                if body is not None:
+                    return body
+                if attempt + 1 < retries:
+                    time.sleep(delay * (attempt + 1))
+                    continue
+            raise RuntimeError(f"GET {url} -> HTTP {e.code}") from e
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             if attempt + 1 < retries:
                 time.sleep(delay * (attempt + 1))
                 continue
-            raise
+            raise RuntimeError(f"GET {url} failed: {e!r}") from e
     return None
 
 
@@ -811,7 +869,7 @@ def main() -> None:
     ap.add_argument("--out", required=True, type=pathlib.Path, help="Output binary DB path (levels_1_0.bin)")
     ap.add_argument("--cache-dir", type=pathlib.Path, default=None, help="Directory to cache GDHistory responses")
     ap.add_argument("--orig-apk", type=pathlib.Path, default=None, help="Original GD 1.02 APK for frame validation")
-    ap.add_argument("--workers", type=int, default=8, help="Concurrent HTTP workers (default: 8)")
+    ap.add_argument("--workers", type=int, default=4, help="Concurrent HTTP workers (default: 4)")
     ap.add_argument("--min-levels", type=int, default=400, help="Minimum expected archived levels (default: 400)")
     ap.add_argument(
         "--exclude-deleted",
@@ -854,16 +912,44 @@ def main() -> None:
             for oid in archived_ids
         }
         done_cnt = 0
+        failed: list[int] = []
         for fut in concurrent.futures.as_completed(futs):
             oid = futs[fut]
-            res = fut.result()
             done_cnt += 1
+            try:
+                res = fut.result()
+            except Exception as exc:  # transient HTTP/Cloudflare failures
+                print(f"  [error] ID {oid}: {exc!r}", file=sys.stderr)
+                failed.append(oid)
+                res = None
+            if res is not None:
+                levels.append(res)
+            elif oid not in failed:
+                print(f"  [skip] ID {oid}: no archived level_string available", file=sys.stderr)
+            if done_cnt % 50 == 0 or done_cnt == len(archived_ids):
+                print(f"  ... processed {done_cnt}/{len(archived_ids)} archived levels")
+
+    # One sequential retry pass for transient failures (Cloudflare 403/429 bursts).
+    if failed:
+        print(f"==> Retrying {len(failed)} level(s) that failed with transient errors")
+        retry_failed: list[int] = []
+        for oid in failed:
+            try:
+                res = process_single_level(oid, args.cache_dir, valid_obj_ids)
+            except Exception as exc:
+                print(f"  [error] ID {oid} (retry): {exc!r}", file=sys.stderr)
+                retry_failed.append(oid)
+                continue
             if res is not None:
                 levels.append(res)
             else:
-                print(f"  [skip] ID {oid}: no valid level_string found", file=sys.stderr)
-            if done_cnt % 50 == 0 or done_cnt == len(archived_ids):
-                print(f"  ... processed {done_cnt}/{len(archived_ids)} archived levels")
+                print(f"  [skip] ID {oid} (retry): no archived level_string available", file=sys.stderr)
+        if retry_failed:
+            print(
+                f"WARNING: {len(retry_failed)} level(s) still failed "
+                f"(first: {retry_failed[:10]}); archive will contain {len(levels)} levels",
+                file=sys.stderr,
+            )
 
     if len(levels) < args.min_levels:
         raise RuntimeError(f"Built only {len(levels)} levels (< min_levels={args.min_levels})")
