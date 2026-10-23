@@ -142,12 +142,33 @@ def verify_local_gdps(zf: zipfile.ZipFile, infos: dict, raw_apk: bytes) -> None:
     )
 
 
+def _arg_value(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1] if flag in argv and argv.index(flag) + 1 < len(argv) else ""
+
+
 def main() -> None:
     apk_path = sys.argv[1] if len(sys.argv) >= 2 else ""
-    local_gdps = "--local-gdps" in sys.argv and sys.argv[sys.argv.index("--local-gdps") + 1] == "1"
+    local_gdps = _arg_value(sys.argv, "--local-gdps") == "1"
+    orig_apk_path = _arg_value(sys.argv, "--orig-apk")
     if not apk_path:
-        print(f"Usage: {sys.argv[0]} <path_to_apk> [--local-gdps 0|1]", file=sys.stderr)
+        print(
+            f"Usage: {sys.argv[0]} <path_to_apk> [--local-gdps 0|1] [--orig-apk <source APK>]",
+            file=sys.stderr,
+        )
         sys.exit(2)
+
+    # When the source APK is supplied, every expectation below is derived from it, so the
+    # same verifier works for the 1.02 and the 1.1 builds instead of hard-coding one game.
+    expected_guest_sha = ORIG_LIBGAME_SHA256
+    expected_orig_assets: set[str] | None = None
+    if orig_apk_path:
+        with zipfile.ZipFile(orig_apk_path, "r") as ozf:
+            expected_guest_sha = hashlib.sha256(ozf.read("lib/armeabi/libgame.so")).hexdigest()
+            expected_orig_assets = {
+                i.filename
+                for i in ozf.infolist()
+                if i.filename.startswith("assets/") and not i.filename.endswith("/")
+            }
     with open(apk_path, "rb") as f:
         raw_apk = f.read()
 
@@ -187,6 +208,8 @@ def main() -> None:
             raise RuntimeError("ModernPlatformHelper class missing from classes2.dex")
         if b"Lcom/robtopx/geometryjump/ModernMusicController;" not in dex2:
             raise RuntimeError("ModernMusicController class missing from classes2.dex")
+        if b"Lcom/robtopx/geometryjump/ModernTextLayout;" not in dex2:
+            raise RuntimeError("ModernTextLayout class missing from classes2.dex")
         if b"Lcom/robtopx/geometryjump/ModernMusicController;" not in dex1:
             raise RuntimeError("org/cocos2dx/lib/p -> ModernMusicController delegation missing from classes.dex")
 
@@ -199,9 +222,9 @@ def main() -> None:
 
         guest_game = zf.read("assets/arm32/libgame.so")
         guest_sha = hashlib.sha256(guest_game).hexdigest()
-        if guest_sha != ORIG_LIBGAME_SHA256:
+        if guest_sha != expected_guest_sha:
             raise RuntimeError(
-                f"assets/arm32/libgame.so SHA-256 mismatch: got {guest_sha}, expected {ORIG_LIBGAME_SHA256}"
+                f"assets/arm32/libgame.so SHA-256 mismatch: got {guest_sha}, expected {expected_guest_sha}"
             )
 
         # 4. Original game assets + STORED audio/resources check
@@ -213,7 +236,11 @@ def main() -> None:
             and not k.startswith("assets/gdps/")
             and not k.endswith("/")
         ]
-        if len(orig_assets) != 136:
+        if expected_orig_assets is not None:
+            missing = sorted(expected_orig_assets - set(orig_assets))
+            if missing:
+                raise RuntimeError(f"Built APK is missing {len(missing)} source asset(s): {missing[:8]}")
+        elif len(orig_assets) != 136:
             raise RuntimeError(f"Expected all 136 original GD 1.02 assets, found {len(orig_assets)}")
 
         # 4b. Optional private offline GD 1.0 GDPS level archive

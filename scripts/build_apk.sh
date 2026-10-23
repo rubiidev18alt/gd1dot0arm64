@@ -6,10 +6,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ORIG_APK="${1:-$ROOT/third_party/Geometry.Dash.ver.1.02.build.4.apk}"
+# Input APK: defaults to Geometry Dash 1.02 build 4, but any compatible RobTop
+# build can be supplied (the 1.1 variant uses GD 1.1 build 5). The bridge itself is
+# version-agnostic; only the smali patches and the embedded guest binary change.
+GD_VERSION="${GD102_VERSION:-1.02}"
+ORIG_APK="${GD102_INPUT_APK:-${1:-$ROOT/third_party/Geometry.Dash.ver.1.02.build.4.apk}}"
+EXPECTED_INPUT_SHA256="${GD102_INPUT_SHA256:-37ae0e63820572994e63421bb3b138731ac40f9e6bb1030e137e9eaf03aa68a9}"
 PACKAGE_NAME="${GD102_PACKAGE_NAME:-com.robtopx.geometryj102}"
 APP_NAME="${GD102_APP_NAME:-gd 1.02 arm64}"
-OUT_APK="${2:-$ROOT/dist/gd-1.02-arm64-${PACKAGE_NAME}.apk}"
+OUT_APK="${2:-$ROOT/dist/gd-${GD_VERSION}-arm64-${PACKAGE_NAME}.apk}"
 
 # Optional: embed the private local 1.0 GDPS level archive (scripts/build_gdhistory_db.py output).
 # Set GD102_LOCAL_GDPS=1 (and GD102_GDPS_DB=/path/levels_1_0.bin) to build the offline-server variant.
@@ -70,11 +75,13 @@ else
     "$ROOT/scripts/fetch_deps.sh" --with-apk "$ORIG_APK"
 fi
 
-ORIG_SHA256="37ae0e63820572994e63421bb3b138731ac40f9e6bb1030e137e9eaf03aa68a9"
-echo "$ORIG_SHA256  $ORIG_APK" | sha256sum -c --quiet - || {
-    echo "ERROR: Input APK SHA-256 does not match unmodified Geometry.Dash.ver.1.02.build.4.apk" >&2
-    exit 1
-}
+if [ -n "$EXPECTED_INPUT_SHA256" ]; then
+    echo "$EXPECTED_INPUT_SHA256  $ORIG_APK" | sha256sum -c --quiet - || {
+        echo "ERROR: Input APK SHA-256 does not match the expected $GD_VERSION build" >&2
+        exit 1
+    }
+fi
+echo "==> Building Geometry Dash $GD_VERSION from $ORIG_APK"
 
 WORK="$ROOT/.work_apk"
 rm -rf "$WORK"
@@ -123,10 +130,11 @@ if [ "$LOCAL_GDPS" = "1" ]; then
     echo "==> Embedded private GD 1.0 GDPS level archive: $(stat -c%s "$GDPS_DB") bytes ($(sha256sum "$GDPS_DB" | cut -d' ' -f1))"
 fi
 
-echo "==> Applying Android 16 + ARM64 manifest & smali patches (package=$PACKAGE_NAME, app_name='$APP_NAME', local_gdps=$LOCAL_GDPS)"
+echo "==> Applying Android 16 + ARM64 manifest & smali patches (package=$PACKAGE_NAME, app_name='$APP_NAME', local_gdps=$LOCAL_GDPS, version=$GD_VERSION)"
 python3 "$ROOT/scripts/patch_manifest_and_smali.py" "$WORK/decoded" \
     --package "$PACKAGE_NAME" \
     --app-name "$APP_NAME" \
+    --gd-version "$GD_VERSION" \
     --local-gdps "$LOCAL_GDPS"
 
 echo "==> Rebuilding APK via Apktool"
@@ -217,7 +225,7 @@ echo "$BADGING" | grep -Fq "launchable-activity: name='com.robtopx.geometryjump.
     echo "ERROR: APK launchable-activity missing com.robtopx.geometryjump.GeometryJump" >&2
     exit 1
 }
-python3 "$ROOT/scripts/verify_apk.py" "$OUT_APK" --local-gdps "$LOCAL_GDPS"
+python3 "$ROOT/scripts/verify_apk.py" "$OUT_APK" --local-gdps "$LOCAL_GDPS" --orig-apk "$ORIG_APK"
 
 rm -rf "$WORK"
 echo "==> Built verified ARM64 APK: $OUT_APK"

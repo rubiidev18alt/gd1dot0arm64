@@ -784,6 +784,12 @@ def main() -> None:
         help="Target Android application label (default: 'gd 1.02 arm64')",
     )
     parser.add_argument(
+        "--gd-version",
+        default="1.02",
+        help="Geometry Dash build being patched (selects version-specific smali targets; "
+        "default: 1.02)",
+    )
+    parser.add_argument(
         "--local-gdps",
         default="0",
         choices=("0", "1"),
@@ -800,13 +806,32 @@ def main() -> None:
 
     patch_apktool_yml(apk_dir, local_gdps=local_gdps)
     patch_manifest(apk_dir, args.package, args.app_name)
-    patch_geometry_jump(smali_root)
-    patch_base_robtop(smali_root)
-    patch_chartboost_manager(smali_root)
+
+    # Essential for every supported build: without these the port does not run at all.
     patch_cocos2dx_bitmap_and_renderer(smali_root)
     patch_cocos2dx_text_layout(smali_root)
-    patch_cocos2dx_music(smali_root)
-    patch_simple_crypto(smali_root)
+
+    # Platform / legacy-SDK fixes. The 1.1 build is five weeks newer than 1.02 and some
+    # of these targets may already be fixed or renamed there, so for non-1.02 inputs a
+    # missing target is a warning instead of a hard failure.
+    optional = [
+        ("GeometryJump", patch_geometry_jump),
+        ("BaseRobTopActivity", patch_base_robtop),
+        ("Chartboost", patch_chartboost_manager),
+        ("Cocos2dxMusic", patch_cocos2dx_music),
+        ("SimpleCrypto", patch_simple_crypto),
+    ]
+    skipped: list[str] = []
+    for name, fn in optional:
+        try:
+            fn(smali_root)
+        except Exception as exc:  # noqa: BLE001
+            if args.gd_version == "1.02":
+                raise
+            skipped.append(f"{name}: {exc}")
+            print(f"  ! {name} patch not applicable to {args.gd_version}: {exc}")
+    if skipped:
+        print(f"  ({len(skipped)} optional patch(es) skipped for GD {args.gd_version})")
     print(
         f"Successfully patched manifest (package={args.package}, label='{args.app_name}', "
         f"local_gdps={int(local_gdps)}), apktool.yml, and smali in {apk_dir}"

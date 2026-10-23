@@ -323,6 +323,7 @@ extern "C" __attribute__((visibility("default"))) bool gd102_host_boot_from_dir(
         paths::add_mapping("/data/data/com.robtopx.geometryjump", data_dir);
         paths::add_mapping("/data/data/com.robtopx.geometryj102", data_dir);
         paths::add_mapping("/data/data/com.robtopx.geomgdps102", data_dir);
+        paths::add_mapping("/data/data/com.robtopx.geometryj11", data_dir);
         write_synthetic_cpuinfo32(data_dir);
 
         std::string dir = arm32_dir;

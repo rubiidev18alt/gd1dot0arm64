@@ -25,6 +25,16 @@ APKTOOL_URL="https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/ap
 APKTOOL_SHA256="56d59c524fc764263ba8d345754d8daf55b1887818b15cd3b594f555d249e2db"
 
 ORIG_APK_SHA256="37ae0e63820572994e63421bb3b138731ac40f9e6bb1030e137e9eaf03aa68a9"
+
+# Geometry Dash 1.1 build 5, the release that introduced Time Machine and mirror portals.
+# Pinned by size until the SHA-256 has been recorded from a verified CI fetch.
+GD11_APK_SHA256="${GD11_APK_SHA256:-}"
+GD11_APK_SIZE=19482603
+GD11_APK_URLS=(
+    "https://ia803202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=Geometry.Dash.ver.1.1.build.5.apk"
+    "https://ia903202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=Geometry.Dash.ver.1.1.build.5.apk"
+    "https://archive.org/download/every-geometry-dash-version/every%20geometry%20dash%20version.zip/Geometry.Dash.ver.1.1.build.5.apk"
+)
 ORIG_APK_URLS=(
     "https://ia803202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=Geometry.Dash.ver.1.02.build.4.apk"
     "https://ia903202.us.archive.org/view_archive.php?archive=/22/items/every-geometry-dash-version/every%20geometry%20dash%20version.zip&file=Geometry.Dash.ver.1.02.build.4.apk"
@@ -109,6 +119,43 @@ if [ "${1:-}" = "--with-apk" ]; then
             echo "ERROR: Failed to download Geometry.Dash.ver.1.02.build.4.apk" >&2
             exit 1
         fi
+    fi
+fi
+
+# 6. Optional: fetch unmodified Geometry.Dash.ver.1.1.build.5.apk (mirror portals + Time Machine)
+if [ "${1:-}" = "--with-apk11" ]; then
+    APK_DEST="${2:-$TP/Geometry.Dash.ver.1.1.build.5.apk}"
+    ok=0
+    if [ -f "$APK_DEST" ]; then
+        if [ -n "$GD11_APK_SHA256" ]; then
+            echo "$GD11_APK_SHA256  $APK_DEST" | sha256sum -c --quiet - 2>/dev/null && ok=1
+        elif [ "$(stat -c%s "$APK_DEST")" = "$GD11_APK_SIZE" ]; then
+            ok=1
+        fi
+    fi
+    if [ "$ok" = "1" ]; then
+        echo "==> Verified cached GD 1.1 APK at $APK_DEST"
+    else
+        echo "==> Downloading original Geometry.Dash.ver.1.1.build.5.apk"
+        mkdir -p "$(dirname "$APK_DEST")"
+        rm -f "$APK_DEST.part"
+        for url in "${GD11_APK_URLS[@]}"; do
+            if curl -fL --connect-timeout 20 --max-time 300 -o "$APK_DEST.part" "$url"; then
+                if [ -n "$GD11_APK_SHA256" ]; then
+                    if echo "$GD11_APK_SHA256  $APK_DEST.part" | sha256sum -c --quiet - 2>/dev/null; then
+                        mv "$APK_DEST.part" "$APK_DEST"; break
+                    fi
+                elif [ "$(stat -c%s "$APK_DEST.part")" = "$GD11_APK_SIZE" ]; then
+                    mv "$APK_DEST.part" "$APK_DEST"; break
+                fi
+            fi
+            rm -f "$APK_DEST.part"
+        done
+        if [ ! -f "$APK_DEST" ]; then
+            echo "ERROR: Failed to download Geometry.Dash.ver.1.1.build.5.apk" >&2
+            exit 1
+        fi
+        echo "==> GD 1.1 APK sha256: $(sha256sum "$APK_DEST" | cut -d' ' -f1)"
     fi
 fi
 

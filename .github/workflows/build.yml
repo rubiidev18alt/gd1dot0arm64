@@ -171,10 +171,26 @@ jobs:
             yes | "$SDKMANAGER" --sdk_root="$SDK" "build-tools;36.0.0" >/dev/null || true
           fi
 
+      - name: Restore cached Geometry Dash 1.1 APK
+        uses: actions/cache@v4
+        with:
+          path: /tmp/gd_cache11
+          key: gd-1.1-build5-orig-v1
+
       - name: Prepare original APK & build ARM64 Android 16 APK
         run: |
           set -euo pipefail
           mkdir -p third_party dist
+          if [ -f /tmp/gd_cache11/orig11.apk ]; then
+            cp /tmp/gd_cache11/orig11.apk third_party/Geometry.Dash.ver.1.1.build.5.apk
+          else
+            ./scripts/fetch_deps.sh --with-apk11 third_party/Geometry.Dash.ver.1.1.build.5.apk || true
+            if [ -f third_party/Geometry.Dash.ver.1.1.build.5.apk ]; then
+              mkdir -p /tmp/gd_cache11
+              cp third_party/Geometry.Dash.ver.1.1.build.5.apk /tmp/gd_cache11/orig11.apk
+              echo "::notice title=GD 1.1 source::$((stat -c%s third_party/Geometry.Dash.ver.1.1.build.5.apk)) bytes sha256=$(sha256sum third_party/Geometry.Dash.ver.1.1.build.5.apk | cut -d' ' -f1)"
+            fi
+          fi
           if [ -f /tmp/gd_cache/orig.apk ]; then
             cp /tmp/gd_cache/orig.apk third_party/Geometry.Dash.ver.1.02.build.4.apk
           elif [ -f /tmp/gd_cache/Geometry.Dash.ver.1.02.build.4.apk ]; then
@@ -184,6 +200,7 @@ jobs:
           APK_NAME="gd-1.02-arm64-com.robtopx.geometryj102.apk"
           ORIG_PKG_APK="GeometryDash-1.02-arm64-android16.apk"
           GDPS_APK="gd-1.02-gdps-com.robtopx.geomgdps102.apk"
+          GD11_APK="gd-1.1-arm64-com.robtopx.geometryj11.apk"
 
           if ! (
             set -euo pipefail
@@ -198,6 +215,19 @@ jobs:
               ./scripts/build_apk.sh \
                 third_party/Geometry.Dash.ver.1.02.build.4.apk \
                 "dist/$ORIG_PKG_APK"
+
+            if [ -f third_party/Geometry.Dash.ver.1.1.build.5.apk ]; then
+              GD102_VERSION="1.1" \
+              GD102_INPUT_APK="third_party/Geometry.Dash.ver.1.1.build.5.apk" \
+              GD102_INPUT_SHA256="" \
+              GD102_PACKAGE_NAME="com.robtopx.geometryj11" \
+              GD102_APP_NAME="gd 1.1 arm64" \
+                ./scripts/build_apk.sh \
+                  third_party/Geometry.Dash.ver.1.1.build.5.apk \
+                  "dist/$GD11_APK"
+            else
+              echo "GD 1.1 APK absent; skipping the com.robtopx.geometryj11 variant"
+            fi
 
             if [ -f third_party/levels_1_0.bin ]; then
               GD102_PACKAGE_NAME="com.robtopx.geomgdps102" \
@@ -236,6 +266,9 @@ jobs:
             if [ -f "$GDPS_APK" ]; then
               sha256sum "$GDPS_APK" > "${GDPS_APK}.sha256"
             fi
+            if [ -f "$GD11_APK" ]; then
+              sha256sum "$GD11_APK" > "${GD11_APK}.sha256"
+            fi
           )
           APK_SUMMARY="$(cat "dist/${APK_NAME}.sha256") ($(stat -c%s "dist/$APK_NAME") bytes)"
           echo "::notice title=Built APK::$APK_SUMMARY"
@@ -255,6 +288,8 @@ jobs:
             dist/GeometryDash-1.02-arm64-android16.apk.sha256
             dist/gd-1.02-gdps-com.robtopx.geomgdps102.apk
             dist/gd-1.02-gdps-com.robtopx.geomgdps102.apk.sha256
+            dist/gd-1.1-arm64-com.robtopx.geometryj11.apk
+            dist/gd-1.1-arm64-com.robtopx.geometryj11.apk.sha256
           if-no-files-found: error
 
   verify-arm64-runtime:
@@ -304,6 +339,7 @@ jobs:
           set -euo pipefail
           APK_FILE="dist/gd-1.02-arm64-com.robtopx.geometryj102.apk"
           GDPS_APK="dist/gd-1.02-gdps-com.robtopx.geomgdps102.apk"
+          GD11_APK_FILE="dist/gd-1.1-arm64-com.robtopx.geometryj11.apk"
           if ! (
             set -euo pipefail
             ./scripts/fetch_deps.sh
@@ -321,6 +357,10 @@ jobs:
                 -o /tmp/apk_gdps/libgdps_probe.so tests/guest_gdps_probe.c
             else
               echo "GDPS APK absent; skipping the private-server runtime checks"
+            fi
+            if [ -f "$GD11_APK_FILE" ]; then
+              rm -rf /tmp/apk_arm32_11 && mkdir -p /tmp/apk_arm32_11
+              unzip -q -j "$GD11_APK_FILE" "assets/arm32/libguestrt.so" "assets/arm32/libgame.so" -d /tmp/apk_arm32_11
             fi
             ./tests/build_java_stubs.sh /tmp/headless_stubs.jar
           ) > /tmp/verify_prep.log 2>&1; then
@@ -424,8 +464,31 @@ jobs:
             cat /tmp/verify_gdps.log
             SUMMARY="$(grep -E '^\[VERIFY\]|^===|^\[guest-probe\]' /tmp/verify_run.log /tmp/verify_gdps.log | sed 's|^/tmp/||' | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
           fi
+          if [ -f "$GD11_APK_FILE" ]; then
+            # GD 1.1 variant: boot the real 1.1 guest binary on ARM64 and re-run the full
+            # rendering / audio / save / input suite against it.
+            if ! /tmp/build_verify/gd102_verify_runner \
+                "$LIBJVM" \
+                /tmp/headless_stubs.jar \
+                /tmp/apk_arm32_11 \
+                "$GD11_APK_FILE" \
+                /tmp/gd102_verify_data_11 > /tmp/verify_11.log 2>&1; then
+              python3 - /tmp/verify_11.log "GD 1.1 ARM64 runtime verification failed" << 'PYEOF'
+            import sys
+            raw = open(sys.argv[1], errors="replace").read().splitlines()
+            txt = "\n".join(raw[-90:]).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+            for idx, start in enumerate(range(max(0, len(txt) - 7200), len(txt), 3600)):
+                print(f"::error title={sys.argv[2]} ({idx+1})::{txt[start:start+3600]}")
+          PYEOF
+              cat /tmp/verify_11.log
+              exit 1
+            fi
+            cat /tmp/verify_11.log
+          fi
+
           SUMMARY_LOGS="/tmp/verify_run.log"
           if [ -f /tmp/verify_gdps.log ]; then SUMMARY_LOGS="$SUMMARY_LOGS /tmp/verify_gdps.log"; fi
+          if [ -f /tmp/verify_11.log ]; then SUMMARY_LOGS="$SUMMARY_LOGS /tmp/verify_11.log"; fi
           SUMMARY="$(grep -E '^\[VERIFY\]|^===|^\[guest-probe\]' $SUMMARY_LOGS | sed 's|^/tmp/||' | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
           echo "::notice title=ARM64 Runtime Verification::$SUMMARY"
 
@@ -455,7 +518,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="v1.0.4"
+          TAG="v1.1.0"
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
@@ -465,6 +528,7 @@ jobs:
           SHA_COINSTALL="$(cat "dist/${APK_NAME}.sha256")"
           SHA_ORIG="$(cat "dist/${ORIG_PKG_APK}.sha256")"
           SHA_GDPS=""
+          SHA_11=""
           ASSETS=(
             "dist/${APK_NAME}" "dist/${APK_NAME}.sha256"
             "dist/${ORIG_PKG_APK}" "dist/${ORIG_PKG_APK}.sha256"
@@ -474,9 +538,13 @@ jobs:
             SHA_GDPS="$(cat "dist/${GDPS_APK}.sha256")"
             ASSETS+=("dist/${GDPS_APK}" "dist/${GDPS_APK}.sha256")
           fi
+          if [ -f "dist/${GD11_APK}" ]; then
+            SHA_11="$(cat "dist/${GD11_APK}.sha256")"
+            ASSETS+=("dist/${GD11_APK}" "dist/${GD11_APK}.sha256")
+          fi
 
           # Refresh earlier release tags in-place so any bookmarked links serve the fully fixed APKs.
-          for OLD_TAG in v1.0.0 v1.0.1 v1.0.2 v1.0.3; do
+          for OLD_TAG in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4; do
             if gh release view "$OLD_TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
               gh release upload "$OLD_TAG" \
                 "dist/${APK_NAME}" \
@@ -488,19 +556,27 @@ jobs:
           done
 
           NOTES=$(cat <<EOF
-          ## gd 1.02 arm64 — v1.0.4 (music unpause & sound-effect fixes)
+          ## gd 1.02 arm64 — v1.1.0 (GD 1.1 content: Time Machine + mirror portals, and a large-screen text fix)
 
-          ### What's New in v1.0.4
-          - **Includes the v1.0.3 music unpause fix**: \`ModernMusicController\` keeps the exact paused \`MediaPlayer\` decoder state, so unpausing resumes at the same millisecond instead of restarting at \`0:00\`.
-          - **Includes the v1.0.2 SFX pitch & speed fix**: correct variadic \`jfloat\` -> \`double\` unmarshalling, so sound effects play at 100% speed and pitch.
-          - Both variants below are rebuilt from the same verified ARM64 source and re-run through the full native ARM64 + GLES2 + JVM verification suite on real ARM64 hardware before publishing.
+          ### What's New in v1.1.0
+          - **New \`gd 1.1 arm64\` build (\`package="com.robtopx.geometryj11"\`)** — a full ARM64 port of **Geometry Dash 1.1 (build 5)**, the update that introduced **Time Machine** and **mirror portals**, running the original, unmodified 1.1 \`libgame.so\` through the same Dynarmic ARM64 bridge. This is the only faithful way to get those mechanics: mirror mode is engine code that simply does not exist in the 1.02 binary, whose collision handler only knows gravity, ship and cube portals.
+            - Time Machine with its own soundtrack, achievements and icon/colour unlocks.
+            - Both mirror portals (blue and orange), in-game **and** placeable in the editor, working exactly as RobTop shipped them.
+          - **Fixed: text layout on large screens.** The 2013 cocos2d-x layout was written for 480x320 phones: it sized label bitmaps with integer math and never checked \`GL_MAX_TEXTURE_SIZE\`, so large labels exceeded the GPU limit and disappeared. \`ModernTextLayout\` keeps the identical Java/JNI contract but measures with float precision, wraps on word boundaries, honours explicit newlines/line limits with an ellipsis, and scales the font down to the real texture limit instead of rendering nothing.
+          - Both 1.02 variants keep every previous fix: music unpause position (v1.0.3), SFX pitch/speed (v1.0.2) and the Android 16/16 KB page hardening.
 
           ### APK Variants Included
-          1. **\`${APK_NAME}\`** — **Co-installable variant** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**), official online servers.
-          2. **\`${ORIG_PKG_APK}\`** — **Original package ID variant** (\`package="com.robtopx.geometryjump"\`, app name **\`Geometry Dash\`**), official online servers.
+          1. **\`${GD11_APK}\`** — **Geometry Dash 1.1** (\`package="com.robtopx.geometryj11"\`, app name **\`gd 1.1 arm64\`**). Co-installable; adds Time Machine, mirror portals, 1.1 achievements and icons.
+          2. **\`${APK_NAME}\`** — **GD 1.02, co-installable** (\`package="com.robtopx.geometryj102\"\`, app name **\`gd 1.02 arm64\`**), official online servers.
+          3. **\`${ORIG_PKG_APK}\`** — **GD 1.02, original package id** (\`package="com.robtopx.geometryjump\"\`, app name **\`Geometry Dash\`**), official online servers.
+
+          ### Notes
+          - The 1.9 PC UHD (4x) texture back-port is **not** in this release: those assets are PC-only and were not available to the build, and 1.02 already ships the 2x \`-hd\` set.
+          - The private offline level server variant (\`com.robtopx.geomgdps102\`) remains disabled while the GD History archive job cannot get through Cloudflare.
 
           ### SHA-256 Checksums
           \`\`\`text
+          ${SHA_11}
           ${SHA_COINSTALL}
           ${SHA_ORIG}
           ${SHA_GDPS}
@@ -512,12 +588,12 @@ jobs:
             gh release upload "$TAG" "${ASSETS[@]}" \
               --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" \
-              --title "gd 1.02 arm64 — v1.0.4 (music unpause & sound-effect fixes)" \
+              --title "gd 1.02 arm64 — v1.1.0 (GD 1.1 content + large-screen text fix)" \
               --notes "$NOTES" \
               --repo "${GITHUB_REPOSITORY}"
           else
             gh release create "$TAG" "${ASSETS[@]}" \
-              --title "gd 1.02 arm64 — v1.0.4 (music unpause & sound-effect fixes)" \
+              --title "gd 1.02 arm64 — v1.1.0 (GD 1.1 content + large-screen text fix)" \
               --notes "$NOTES" \
               --target "${GITHUB_SHA}" \
               --repo "${GITHUB_REPOSITORY}"
