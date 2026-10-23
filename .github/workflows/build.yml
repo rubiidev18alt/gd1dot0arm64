@@ -363,8 +363,8 @@ jobs:
             set -euo pipefail
             ./scripts/fetch_deps.sh
             ./guest/build.sh /tmp/test_gnu_libguestrt.so
-            rm -rf /tmp/apk_arm32 /tmp/gd102_verify_data /tmp/apk_gdps /tmp/gd102_verify_data_gdps
-            mkdir -p /tmp/apk_arm32 /tmp/gd102_verify_data /tmp/apk_gdps /tmp/gd102_verify_data_gdps
+            rm -rf /tmp/apk_arm32 /tmp/gd102_verify_data /tmp/apk_gdps /tmp/gd102_verify_data_gdps /tmp/apk_arm32_11 /tmp/gd102_verify_data_11
+            mkdir -p /tmp/apk_arm32 /tmp/gd102_verify_data /tmp/apk_gdps /tmp/gd102_verify_data_gdps /tmp/apk_arm32_11 /tmp/gd102_verify_data_11
             unzip -q -j "$APK_FILE" \
               "assets/arm32/libguestrt.so" "assets/arm32/libgame.so" \
               -d /tmp/apk_arm32
@@ -510,6 +510,23 @@ jobs:
           if [ -f /tmp/verify_11.log ]; then SUMMARY_LOGS="$SUMMARY_LOGS /tmp/verify_11.log"; fi
           SUMMARY="$(grep -E '^\[VERIFY\]|^===|^\[guest-probe\]' $SUMMARY_LOGS | sed 's|^/tmp/||' | python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","").replace("\n","%0A"))')"
           echo "::notice title=ARM64 Runtime Verification::$SUMMARY"
+
+      - name: Report verification logs on failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          python3 - << 'PYEOF'
+          import pathlib
+          for name in ("verify_prep", "verify_run", "verify_gdps", "verify_11"):
+              path = pathlib.Path(f"/tmp/{name}.log")
+              if not path.is_file():
+                  print(f"::error title={name}::log missing (failed before this phase)")
+                  continue
+              lines = path.read_text(errors="replace").splitlines()
+              tail = "\n".join(lines[-35:])[-3200:]
+              txt = tail.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              print(f"::error title={name} tail::{txt}")
+          PYEOF
 
   publish-release:
     name: Publish GitHub Release
