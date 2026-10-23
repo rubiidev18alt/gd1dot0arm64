@@ -252,7 +252,9 @@ std::string gdps_http_post(u16 port, const std::string &script, const std::strin
 
 int main(int argc, char **argv) {
     if (argc < 6) {
-        fprintf(stderr, "Usage: %s <libjvm.so> <headless_stubs.jar> <arm32_dir> <apk_path> <data_dir>\n", argv[0]);
+        fprintf(stderr,
+                "Usage: %s <libjvm.so> <headless_stubs.jar> <arm32_dir> <apk_path> <data_dir> "
+                "[gdps_db] [probe_so] [expected_ctors]\n", argv[0]);
         return 2;
     }
     const std::string libjvm_path = argv[1];
@@ -260,6 +262,8 @@ int main(int argc, char **argv) {
     const std::string arm32_dir   = argv[3];
     const std::string apk_path    = argv[4];
     const std::string data_dir    = argv[5];
+    // The guest binary is version-specific: GD 1.02 has 226 static constructors, GD 1.1 has 229.
+    const u32 expected_ctors = argc > 8 ? (u32)std::strtoul(argv[8], nullptr, 10) : 226u;
 
     JNIEnv *env = nullptr;
     JavaVM *vm = boot_jvm(libjvm_path, stubs_jar, data_dir, &env);
@@ -288,7 +292,9 @@ int main(int argc, char **argv) {
     bool boot_ok = gd102_host_boot_from_dir(vm, env, arm32_dir.c_str(), data_dir.c_str(), &ctors, &unresolved);
     printf("[VERIFY] Guest ELF32 loaded: ctors=%u, unresolved=%u\n", ctors, unresolved);
     CHECK(boot_ok && unresolved == 0, "Unresolved guest symbols detected (%u)", unresolved);
-    CHECK(ctors == 226, "Expected 226 C++ static constructors in GD 1.02 libgame.so, got %u", ctors);
+    CHECK(ctors == expected_ctors,
+          "Expected %u C++ static constructors in the guest libgame.so, got %u (%u extra/fewer)",
+          expected_ctors, ctors, ctors > expected_ctors ? ctors - expected_ctors : expected_ctors - ctors);
 
     CHECK(test_16kb_subpage_unmap(), "16 KB sub-page mem::unmap zeroing invariant failed");
     printf("[VERIFY] 16 KB page-size sub-page unmap zeroing invariant PASSED\n");

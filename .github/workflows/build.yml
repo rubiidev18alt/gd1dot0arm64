@@ -491,7 +491,8 @@ jobs:
                 /tmp/headless_stubs.jar \
                 /tmp/apk_arm32_11 \
                 "$GD11_APK_FILE" \
-                /tmp/gd102_verify_data_11 > /tmp/verify_11.log 2>&1; then
+                /tmp/gd102_verify_data_11 \
+                "" "" 229 > /tmp/verify_11.log 2>&1; then
               python3 - /tmp/verify_11.log "GD 1.1 ARM64 runtime verification failed" << 'PYEOF'
             import sys
             raw = open(sys.argv[1], errors="replace").read().splitlines()
