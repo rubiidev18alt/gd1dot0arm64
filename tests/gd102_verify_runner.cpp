@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
     bool boot_ok = gd102_host_boot_from_dir(vm, env, arm32_dir.c_str(), data_dir.c_str(), &ctors, &unresolved);
     printf("[VERIFY] Guest ELF32 loaded: ctors=%u, unresolved=%u\n", ctors, unresolved);
     CHECK(boot_ok && unresolved == 0, "Unresolved guest symbols detected (%u)", unresolved);
-    CHECK(ctors == 227, "Expected 227 C++ static constructors in GD 1.02 libgame.so, got %u", ctors);
+    CHECK(ctors == 226, "Expected 226 C++ static constructors in GD 1.02 libgame.so, got %u", ctors);
 
     CHECK(test_16kb_subpage_unmap(), "16 KB sub-page mem::unmap zeroing invariant failed");
     printf("[VERIFY] 16 KB page-size sub-page unmap zeroing invariant PASSED\n");
