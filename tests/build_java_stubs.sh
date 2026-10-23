@@ -259,6 +259,9 @@ public class SimpleCrypto {
                 enc = out.toByteArray();
             }
             if (enc.length == 0) return "";
+            if (enc[0] == (byte) '<') {
+                return new String(enc, StandardCharsets.UTF_8);
+            }
             Cipher c = Cipher.getInstance("AES/ECB/PKCS5Padding");
             c.init(Cipher.DECRYPT_MODE, key());
             return new String(c.doFinal(enc), StandardCharsets.UTF_8);

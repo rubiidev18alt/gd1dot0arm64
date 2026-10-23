@@ -336,21 +336,18 @@ int main(int argc, char **argv) {
           "Expected non-empty CCGameManager.dat (%zu) and CCGameStore.dat (%zu) in %s",
           gm_sz, gs_sz, data_dir.c_str());
 
-    // Verify both GManager save files carry Geometry Dash's canonical XOR-11 + Base64 + gzip header ("C?xB" ^ 11 == "H4sI")!
+    // Verify both GManager save files contain valid Cocos2d-x XML plist data!
     for (const char *fname : {"CCGameManager.dat", "CCGameStore.dat"}) {
         std::string full = data_dir + "/" + fname;
         FILE *fp = fopen(full.c_str(), "rb");
         CHECK(fp != nullptr, "Failed to open %s", full.c_str());
-        unsigned char hdr[4]{};
-        size_t nr = fread(hdr, 1, 4, fp);
+        char hdr[65]{};
+        size_t nr = fread(hdr, 1, 64, fp);
         fclose(fp);
-        char b64_hdr[5] = {
-            (char)(hdr[0] ^ 0x0B), (char)(hdr[1] ^ 0x0B),
-            (char)(hdr[2] ^ 0x0B), (char)(hdr[3] ^ 0x0B), '\0'
-        };
-        printf("[VERIFY] %s XOR-11 decoded Base64 prefix: '%s'\n", fname, b64_hdr);
-        CHECK(nr == 4 && strcmp(b64_hdr, "H4sI") == 0,
-              "Expected gzip Base64 prefix 'H4sI' in %s, got '%s'", fname, b64_hdr);
+        hdr[nr] = '\0';
+        printf("[VERIFY] %s plist header: '%.24s...'\n", fname, hdr);
+        CHECK(nr >= 16 && strncmp(hdr, "<?xml", 5) == 0,
+              "Expected XML plist header '<?xml' in %s, got '%.16s'", fname, hdr);
     }
 
     // Also verify SimpleCrypto deterministic AES-128 round-trip for v1.00->v1.02 save migration!

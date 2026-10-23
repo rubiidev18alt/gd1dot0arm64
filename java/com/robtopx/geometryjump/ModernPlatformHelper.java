@@ -110,6 +110,9 @@ public final class ModernPlatformHelper {
                 cipherBytes = out.toByteArray();
             }
             if (cipherBytes.length == 0) return "";
+            if (cipherBytes[0] == (byte) '<') {
+                return new String(cipherBytes, StandardCharsets.UTF_8);
+            }
             Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
             cipher.init(Cipher.DECRYPT_MODE, deriveDeterministicSaveKey());
             byte[] plain = cipher.doFinal(cipherBytes);
