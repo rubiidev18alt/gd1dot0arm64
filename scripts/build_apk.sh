@@ -11,7 +11,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # version-agnostic; only the smali patches and the embedded guest binary change.
 GD_VERSION="${GD102_VERSION:-1.02}"
 ORIG_APK="${GD102_INPUT_APK:-${1:-$ROOT/third_party/Geometry.Dash.ver.1.02.build.4.apk}}"
-EXPECTED_INPUT_SHA256="${GD102_INPUT_SHA256:-37ae0e63820572994e63421bb3b138731ac40f9e6bb1030e137e9eaf03aa68a9}"
+# An explicitly empty GD102_INPUT_SHA256 means "this build is pinned elsewhere" (the 1.1
+# fetch in fetch_deps.sh pins by SHA/size), so honour it instead of falling back.
+if [ "${GD102_INPUT_SHA256+set}" = "set" ]; then
+    EXPECTED_INPUT_SHA256="$GD102_INPUT_SHA256"
+else
+    EXPECTED_INPUT_SHA256="37ae0e63820572994e63421bb3b138731ac40f9e6bb1030e137e9eaf03aa68a9"
+fi
 PACKAGE_NAME="${GD102_PACKAGE_NAME:-com.robtopx.geometryj102}"
 APP_NAME="${GD102_APP_NAME:-gd 1.02 arm64}"
 OUT_APK="${2:-$ROOT/dist/gd-${GD_VERSION}-arm64-${PACKAGE_NAME}.apk}"

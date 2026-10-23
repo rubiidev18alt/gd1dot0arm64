@@ -277,6 +277,25 @@ jobs:
             echo "::notice title=Built GDPS APK::$GDPS_SUMMARY"
           fi
 
+      - name: Report build log on failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          LOG=/tmp/build_apk.log
+          if [ ! -f "$LOG" ]; then
+            echo "::error title=build log::no $LOG (the failure happened before build_apk.sh ran)"
+            exit 0
+          fi
+          python3 - "$LOG" << 'PYEOF'
+          import sys
+          lines = open(sys.argv[1], errors="replace").read().splitlines()
+          interesting = [l for l in lines if ("ERROR" in l or "error:" in l or "RuntimeError" in l
+                          or "FAIL" in l or "Traceback" in l or "WARNING" in l or "!" == l[:1])]
+          body = "\n".join((interesting or lines)[-40:])[-3300:]
+          txt = body.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+          print(f"::error title=build_apk failure::{txt}")
+          PYEOF
+
       - name: Upload built ARM64 APK artifact
         uses: actions/upload-artifact@v4
         with:
