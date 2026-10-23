@@ -124,6 +124,33 @@ jobs:
           done
           ls -la tools/analysis/smali || true
 
+      - name: Decode GD 1.1 structure (port groundwork)
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+          APK=/tmp/gd_ref_1.1.apk
+          [ -s "$APK" ] || { echo "GD 1.1 APK missing"; exit 0; }
+          mkdir -p tools/analysis/gd11
+          java -jar /tmp/apktool.jar d -f -q -o /tmp/decoded11 "$APK" || exit 0
+          cp /tmp/decoded11/AndroidManifest.xml tools/analysis/gd11/ 2>/dev/null || true
+          cp /tmp/decoded11/apktool.yml tools/analysis/gd11/ 2>/dev/null || true
+          {
+            echo "# GD 1.1 smali class inventory"
+            for D in /tmp/decoded11/smali*; do
+              echo "## $(basename "$D")"
+              find "$D" -name '*.smali' -printf '%P\n' | sort
+            done
+          } > tools/analysis/gd11_classes.txt
+          for F in Cocos2dxBitmap Cocos2dxRenderer Cocos2dxHelper; do
+            SRC="$(find /tmp/decoded11 -name "$F.smali" -print -quit)"
+            [ -n "$SRC" ] && cp "$SRC" tools/analysis/gd11/
+          done
+          SRC="$(find /tmp/decoded11 -name 'p.smali' -path '*cocos2dx*' -print -quit)"
+          [ -n "$SRC" ] && cp "$SRC" tools/analysis/gd11/Cocos2dxMusic_p.smali
+          ls -la tools/analysis/gd11
+          echo "smali classes: $(wc -l < tools/analysis/gd11_classes.txt)"
+
       - name: Commit facts
         run: |
           set -euo pipefail

@@ -11,6 +11,7 @@ is plain text so it can be committed back to the repository and read outside CI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import plistlib
 import re
 import struct
@@ -42,6 +43,38 @@ LEVEL_NAMES = (
 
 def _strings(data: bytes, min_len: int = 4) -> list[str]:
     return [m.group().decode("latin-1") for m in re.finditer(rb"[\x20-\x7e]{%d,}" % min_len, data)]
+
+
+def _elf_imports(blob: bytes) -> list[str]:
+    """Undefined dynamic symbols (the imports the ARM64 bridge has to provide)."""
+    if len(blob) < 52 or blob[:4] != b"\x7fELF" or blob[4] != 1:
+        return []
+    e_shoff, = struct.unpack_from("<I", blob, 0x20)
+    e_shentsize, e_shnum, _ = struct.unpack_from("<HHH", blob, 0x2E)
+    if not e_shoff or not e_shnum:
+        return []
+    sections = []
+    for i in range(e_shnum):
+        off = e_shoff + i * e_shentsize
+        if off + 40 > len(blob):
+            break
+        sections.append(struct.unpack_from("<IIIIIIIIII", blob, off))
+    out: set[str] = set()
+    for sh in sections:
+        if sh[1] != 11 or sh[9] != 16:
+            continue
+        strtab = sections[sh[6]]
+        strtab_bytes = blob[strtab[4]:strtab[4] + strtab[5]]
+        for off in range(sh[4], min(sh[4] + sh[5], len(blob)), 16):
+            st_name, st_value, _st_size, st_info, _other, st_shndx = struct.unpack_from("<IIIBBH", blob, off)
+            if st_shndx != 0 or not st_name or st_name >= len(strtab_bytes):
+                continue
+            if (st_info & 0xF) not in (0, 2):  # NOTYPE / FUNC
+                continue
+            end = strtab_bytes.find(b"\x00", st_name)
+            if end > 0:
+                out.add(strtab_bytes[st_name:end].decode("latin-1", "replace"))
+    return sorted(out)
 
 
 def _elf_symbols(blob: bytes) -> list[str]:
@@ -90,6 +123,7 @@ def dump(apk: Path, out: Path) -> None:
         infos = zf.infolist()
         add(f"# {apk.name} facts")
         add(f"apk_size {apk.stat().st_size}")
+        add(f"apk_sha256 {hashlib.sha256(apk.read_bytes()).hexdigest()}")
         add("")
         add("## entries")
         for info in sorted(infos, key=lambda i: i.filename):
@@ -160,6 +194,12 @@ def dump(apk: Path, out: Path) -> None:
         for s in sorted({s for s in _strings(lib) if re.search(LEVEL_NAMES, s, re.I)}):
             add(s)
         add("")
+        imports = _elf_imports(lib)
+        add("")
+        add(f"## imports total={len(imports)}")
+        for name in imports:
+            add(name)
+
         syms = _elf_symbols(lib)
         add(f"## symbols total={len(syms)}")
         interesting = [s for s in syms if re.search(r"PlayLayer|GameObject|Portal|LevelTools|GameLevelManager|ObjectToolbox|CCLabel|CCTexture|GameToolbox", s)]

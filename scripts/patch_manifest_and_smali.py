@@ -539,6 +539,48 @@ def patch_cocos2dx_bitmap_and_renderer(smali_root: pathlib.Path) -> None:
     pr.write_text(txtr, encoding="utf-8")
 
 
+def patch_cocos2dx_text_layout(smali_root: pathlib.Path) -> None:
+    """Replace the 2013 text layout with `ModernTextLayout`.
+
+    The original `Cocos2dxBitmap.createTextBitmap` was written for 480x320 phones: it sizes
+    the label bitmap from integer measurements and never checks the GPU's maximum texture
+    size, so large labels (tablets / high-density screens) exceed `GL_MAX_TEXTURE_SIZE` and
+    the text silently disappears. `ModernTextLayout` keeps the identical Java signature (the
+    native side still calls this exact method and still receives pixels through
+    `nativeInitBitmapDC`) but wraps with float metrics, honours explicit newlines and line
+    limits, and scales the font down to the real texture limit instead of failing.
+    """
+    pb = smali_root / "org/cocos2dx/lib/Cocos2dxBitmap.smali"
+    txt = pb.read_text()
+
+    header = ".method public static createTextBitmap(Ljava/lang/String;Ljava/lang/String;IIII)V"
+    if header not in txt:
+        raise RuntimeError("Cocos2dxBitmap.createTextBitmap(String,String,IIII)V not found")
+
+    # 6 register arguments do not fit in an invoke-static 35c list, so use /range.
+    replacement = (
+        header
+        + "\n    .locals 0\n\n"
+        + "    invoke-static/range {p0 .. p5}, Lcom/robtopx/geometryjump/ModernTextLayout;->"
+        + "createTextBitmap(Ljava/lang/String;Ljava/lang/String;IIII)V\n\n"
+        + "    return-void\n.end method"
+    )
+    pattern = re.compile(re.escape(header) + r".*?\.end method", re.DOTALL)
+    txt, count = pattern.subn(lambda _m: replacement, txt, count=1)
+    if count != 1:
+        raise RuntimeError("failed to replace Cocos2dxBitmap.createTextBitmap body")
+
+    # ModernTextLayout hands the finished bitmap to cocos2d-x through this helper, which is
+    # private in the 2013 build. Reflection also works, but making it public is exact.
+    txt = txt.replace(
+        ".method private static initNativeObject(Landroid/graphics/Bitmap;)V",
+        ".method public static initNativeObject(Landroid/graphics/Bitmap;)V",
+        1,
+    )
+    pb.write_text(txt)
+    print("  - Cocos2dxBitmap.createTextBitmap -> ModernTextLayout (texture-size aware)")
+
+
 def patch_cocos2dx_music(smali_root: pathlib.Path) -> None:
     """
     Replace obfuscated Cocos2dxMusic (`org/cocos2dx/lib/p.smali`) methods with
@@ -762,6 +804,7 @@ def main() -> None:
     patch_base_robtop(smali_root)
     patch_chartboost_manager(smali_root)
     patch_cocos2dx_bitmap_and_renderer(smali_root)
+    patch_cocos2dx_text_layout(smali_root)
     patch_cocos2dx_music(smali_root)
     patch_simple_crypto(smali_root)
     print(
