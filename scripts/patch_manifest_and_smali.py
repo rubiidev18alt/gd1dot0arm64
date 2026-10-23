@@ -536,6 +536,34 @@ def patch_cocos2dx_bitmap_and_renderer(smali_root: pathlib.Path) -> None:
         txtr,
         count=1,
     )
+
+    # 3. Count real rendered frames for the FPS overlay: hook onDrawFrame right after nativeRender().
+    #    `ModernPlatformHelper.onFrameRendered()` only bumps a counter (and raises the GL thread to
+    #    display priority once), so this stays a no-op for frame pacing.
+    if "onFrameRendered" in txtr:
+        print("  - Cocos2dxRenderer.onDrawFrame -> onFrameRendered (already present)")
+    else:
+        odf_pat = re.compile(
+            r"(\.method public onDrawFrame\(Ljavax/microedition/khronos/opengles/GL10;\)V\b.*?)"
+            r"(\n\.end method)",
+            re.DOTALL,
+        )
+        odf = odf_pat.search(txtr)
+        if not odf:
+            raise RuntimeError("Cocos2dxRenderer.onDrawFrame not found")
+        body = odf.group(1)
+        hook = (
+            "    invoke-static {}, Lorg/cocos2dx/lib/Cocos2dxRenderer;->nativeRender()V\n\n"
+            "    invoke-static {}, Lcom/robtopx/geometryjump/ModernPlatformHelper;->onFrameRendered()V"
+        )
+        if "invoke-static {}, Lorg/cocos2dx/lib/Cocos2dxRenderer;->nativeRender()V" not in body:
+            raise RuntimeError("Cocos2dxRenderer.onDrawFrame nativeRender call not found")
+        body = body.replace(
+            "    invoke-static {}, Lorg/cocos2dx/lib/Cocos2dxRenderer;->nativeRender()V", hook, 1
+        )
+        txtr = txtr[: odf.start(1)] + body + txtr[odf.end(1):]
+        print("  - Cocos2dxRenderer.onDrawFrame -> onFrameRendered (FPS counter)")
+
     pr.write_text(txtr, encoding="utf-8")
 
 

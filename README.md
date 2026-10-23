@@ -2,7 +2,7 @@
 
 A complete, 100%-accurate native **ARM64 (`arm64-v8a`)** port of **Geometry Dash 1.02 (build 4)** packaged as **`com.robtopx.geometryj102`** (**`gd 1.02 arm64`**) so it installs side-by-side alongside regular Geometry Dash (`com.robtopx.geometryjump`) with isolated save data — built for modern 64-bit-only Android devices including **Android 16 (API 36)**, **ARMv9 CPUs with hardware AArch32 execution removed** (Google Pixel 7 / 8 / 9 / 10, Snapdragon 8 Gen 3 / 8 Elite, Tensor G3–G5), and **16 KB kernel page sizes**.
 
-**v1.1.0** adds a second, fully co-installable port: **Geometry Dash 1.1 (build 5)** as **`com.robtopx.geometryj11`** (**`gd 1.1 arm64`**) — the update that introduced **Time Machine** and **mirror portals** — plus a large-screen text layout fix that applies to every variant.
+**v1.1.0** adds a second, fully co-installable port: **Geometry Dash 1.1 (build 5)** as **`com.robtopx.geometryj11`** (**`gd 1.1 arm64`**) — the update that introduced **Time Machine** and **mirror portals** — plus a large-screen text layout fix that applies to every variant. **v1.1.1** adds a small top-left **FPS counter** and a few runner/game optimizations aimed at emulators and low-end devices.
 
 [![Download Latest APK Release](https://img.shields.io/github/v/release/rubiidev18alt/gd1dot0arm64?label=Download%20ARM64%20APK&style=for-the-badge)](https://github.com/rubiidev18alt/gd1dot0arm64/releases/latest)
 
@@ -113,6 +113,40 @@ Both the 1.02 and the 1.1 variants use it.
 
 ---
 
+## FPS Counter & Runner Optimizations (v1.1.1)
+
+### FPS counter
+
+A small counter sits in the top-left corner of every variant: **11sp, one decimal place**, in a plain
+Android **`sans-serif`** face — deliberately *not* the game's Pusab bitmap font, and *not* rendered by
+the guest engine.
+
+* **It counts real frames.** `Cocos2dxRenderer.onDrawFrame` is patched to call
+  `ModernPlatformHelper.onFrameRendered()` right after `nativeRender()`, so the number is what the
+  engine actually drew — not vsync callbacks and not the panel refresh rate, which is exactly what
+  matters when measuring an emulator or a low-end phone.
+* **Twice a second.** A 500 ms window on the UI thread turns the counter into `String.format("%.1f")`;
+  the overlay is an ordinary `TextView` above the GL surface, so it costs one composited layer that
+  repaints twice per second.
+* **Cutout-aware.** Padding follows the display cutout (`WindowInsets` / `DisplayCutout`), since the
+  activity runs immersive fullscreen with `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`.
+
+### Slight optimizations for emulators and low-end devices
+
+* **Redundant GL state calls are elided** (`host/src/thunks_gl.cpp`). cocos2d-x 2.0 re-issues the same
+  `glBindTexture` / `glBindBuffer` for every quad; consecutive calls that rebind the object already
+  bound on that texture unit/target now return before entering the GLES driver. Every cache entry
+  mirrors the real GL state — reset on context creation, and a deleted texture unbinds its cache slot —
+  so a skipped call is never stale. Emulator GL stacks (SwiftShader, host translation layers) and
+  low-end mobile GPUs pay noticeably for each of those entry points.
+* **Render thread at display priority.** The GL thread raises itself to
+  `THREAD_PRIORITY_DISPLAY` (`-4`) once, on its first frame, so a busy device or emulator schedules
+  rendered frames ahead of background work instead of at the default priority.
+* Nothing else changed: the guest binaries, game logic, physics, saves and audio are untouched, and
+  the full headless ARM64 suite still passes.
+
+---
+
 ## Building from Source
 
 ### Prerequisites
@@ -181,6 +215,7 @@ python3 scripts/verify_apk.py dist/gd-1.1-arm64-com.robtopx.geometryj11.apk \
 
 `tests/gd102_verify_runner.cpp` boots a real OpenJDK `JavaVM` + Mesa headless `1280x720` OpenGL ES 2.0 Pbuffer context on Linux ARM64, loads `libguestrt.so` and unmodified `libgame.so` through the Dynarmic ARM64 JIT, and verifies:
 
+- the patched renderer references `onFrameRendered` and `classes2.dex` contains `ModernFpsCounter`
 - `0` unresolved symbols across all `UND` imports of `libgame.so` (the 1.02 and 1.1 binaries both
   import the identical set of 277 native symbols)
 - All `226` C++ static initializers of GD 1.02 execute cleanly (and all `229` of GD 1.1)

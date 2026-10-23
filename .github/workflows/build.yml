@@ -556,7 +556,7 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee -a /tmp/publish_release.log) 2>&1
-          TAG="v1.1.0"
+          TAG="v1.1.1"
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
@@ -595,23 +595,29 @@ jobs:
           done
 
           NOTES=$(cat <<EOF
-          ## gd 1.02 arm64 — v1.1.0 (GD 1.1 content: Time Machine + mirror portals, and a large-screen text fix)
+          ## gd 1.02 / gd 1.1 arm64 — v1.1.1 (FPS counter + runner optimizations)
 
-          ### What's New in v1.1.0
-          - **New \`gd 1.1 arm64\` build (\`package="com.robtopx.geometryj11"\`)** — a full ARM64 port of **Geometry Dash 1.1 (build 5)**, the update that introduced **Time Machine** and **mirror portals**, running the original, unmodified 1.1 \`libgame.so\` through the same Dynarmic ARM64 bridge. This is the only faithful way to get those mechanics: mirror mode is engine code that simply does not exist in the 1.02 binary, whose collision handler only knows gravity, ship and cube portals.
-            - Time Machine with its own soundtrack, achievements and icon/colour unlocks.
-            - Both mirror portals (blue and orange), in-game **and** placeable in the editor, working exactly as RobTop shipped them.
-          - **Fixed: text layout on large screens.** The 2013 cocos2d-x layout was written for 480x320 phones: it sized label bitmaps with integer math and never checked \`GL_MAX_TEXTURE_SIZE\`, so large labels exceeded the GPU limit and disappeared. \`ModernTextLayout\` keeps the identical Java/JNI contract but measures with float precision, wraps on word boundaries, honours explicit newlines/line limits with an ellipsis, and scales the font down to the real texture limit instead of rendering nothing.
-          - Both 1.02 variants keep every previous fix: music unpause position (v1.0.3), SFX pitch/speed (v1.0.2) and the Android 16/16 KB page hardening.
+          ### What's New in v1.1.1
+          - **FPS counter, top-left.** Small (11sp), one decimal place, in a plain Android **sans-serif** face — deliberately *not* the game's Pusab bitmap font. It counts frames where the engine actually draws them (\`Cocos2dxRenderer.onDrawFrame\` -> \`ModernPlatformHelper.onFrameRendered()\`) and averages a 500 ms window twice a second, so it reports real rendered frames rather than vsync callbacks or the panel's refresh rate. It is an ordinary TextView layered above the GL surface, inset past the display cutout in immersive mode, and costs the game one composited layer that only repaints twice per second. Present in all three APKs.
+          - **Slight runner & game optimizations for Android emulators and low-end devices.**
+            - Redundant GL state calls are elided: consecutive \`glBindTexture\` / \`glBindBuffer\` calls that rebind the object already bound on that texture unit and target are skipped before they reach the GLES driver. cocos2d-x 2.0 re-binds per quad, and emulator GL stacks and low-end mobile GPUs pay for every driver entry point.
+            - The render thread now runs at \`THREAD_PRIORITY_DISPLAY\` instead of the default priority, so a loaded emulator or low-end device schedules frames ahead of background work.
+            - No gameplay, physics, save, audio or content changes: the 1.02 and 1.1 guest binaries are byte-identical to v1.1.0 and the whole headless ARM64 verification suite still passes.
 
           ### APK Variants Included
-          1. **\`${GD11_APK}\`** — **Geometry Dash 1.1** (\`package="com.robtopx.geometryj11"\`, app name **\`gd 1.1 arm64\`**). Co-installable; adds Time Machine, mirror portals, 1.1 achievements and icons.
+          1. **\`${GD11_APK}\`** — **Geometry Dash 1.1** (\`package="com.robtopx.geometryj11"\`, app name **\`gd 1.1 arm64\`**). Co-installable; Time Machine, both mirror portals, 1.1 achievements and icons.
           2. **\`${APK_NAME}\`** — **GD 1.02, co-installable** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**), official online servers.
           3. **\`${ORIG_PKG_APK}\`** — **GD 1.02, original package id** (\`package="com.robtopx.geometryjump"\`, app name **\`Geometry Dash\`**), official online servers.
+
+          ### Still included from v1.1.0
+          - **Time Machine** with its soundtrack, achievements and its icon/colour unlocks, plus **both mirror portals** (blue and orange) in-game and placeable in the editor — shipped by running the real, unmodified Geometry Dash 1.1 (build 5) \`libgame.so\` through the ARM64 bridge.
+          - **Large-screen text layout fix** (\`ModernTextLayout\`): float-accurate measurement, word wrapping, ellipsis and clamping to the real \`GL_MAX_TEXTURE_SIZE\` instead of labels silently disappearing.
+          - Every earlier 1.02 fix: music unpause position, SFX pitch/speed, Android 16 / 16 KB page hardening.
 
           ### Notes
           - The 1.9 PC UHD (4x) texture back-port is **not** in this release: those assets are PC-only and were not available to the build, and 1.02 already ships the 2x \`-hd\` set.
           - The private offline level server variant (\`com.robtopx.geomgdps102\`) remains disabled while the GD History archive job cannot get through Cloudflare.
+          - The v1.1.1 changelog's "changed:" section had no entries, so nothing else was altered.
 
           ### SHA-256 Checksums
           \`\`\`text
@@ -627,12 +633,12 @@ jobs:
             gh release upload "$TAG" "${ASSETS[@]}" \
               --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" \
-              --title "gd 1.02 arm64 — v1.1.0 (GD 1.1 content + large-screen text fix)" \
+              --title "gd 1.02 / 1.1 arm64 — v1.1.1 (FPS counter + runner optimizations)" \
               --notes "$NOTES" \
               --repo "${GITHUB_REPOSITORY}"
           else
             gh release create "$TAG" "${ASSETS[@]}" \
-              --title "gd 1.02 arm64 — v1.1.0 (GD 1.1 content + large-screen text fix)" \
+              --title "gd 1.02 / 1.1 arm64 — v1.1.1 (FPS counter + runner optimizations)" \
               --notes "$NOTES" \
               --target "${GITHUB_SHA}" \
               --repo "${GITHUB_REPOSITORY}"

@@ -210,6 +210,11 @@ def main() -> None:
             raise RuntimeError("ModernMusicController class missing from classes2.dex")
         if b"Lcom/robtopx/geometryjump/ModernTextLayout;" not in dex2:
             raise RuntimeError("ModernTextLayout class missing from classes2.dex")
+        if b"Lcom/robtopx/geometryjump/ModernFpsCounter;" not in dex2:
+            raise RuntimeError("ModernFpsCounter class missing from classes2.dex")
+        # The FPS overlay is fed from the patched renderer: onDrawFrame must reference our hook.
+        if b"onFrameRendered" not in dex1:
+            raise RuntimeError("Cocos2dxRenderer.onDrawFrame -> ModernPlatformHelper.onFrameRendered hook missing")
         if b"Lcom/robtopx/geometryjump/ModernMusicController;" not in dex1:
             raise RuntimeError("org/cocos2dx/lib/p -> ModernMusicController delegation missing from classes.dex")
 

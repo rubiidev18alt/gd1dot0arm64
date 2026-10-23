@@ -13,9 +13,43 @@ namespace {
 GLuint g_array_buf = 0;
 GLuint g_element_buf = 0;
 
+// 1.1.1 "slight runner optimizations": cocos2d-x 2.0 re-issues the same glBindTexture/glBindBuffer
+// pair for every quad it submits. Both calls are pure state assignments, so re-binding the object
+// that is already bound is a no-op that still costs an ARM32->ARM64 thunk transition and a GLES
+// driver entry point (expensive on emulator GL and on low-end mobile GPUs). Every cache entry below
+// mirrors the real GL state - initialised on context creation, adjusted when the object is deleted -
+// so skipping is never stale.
+constexpr int kMaxTexUnits = 8;
+GLenum g_active_tex = GL_TEXTURE0;
+GLuint g_bound_tex[kMaxTexUnits] = {};
+GLenum g_bound_tex_target[kMaxTexUnits] = {};
+bool g_bound_tex_valid[kMaxTexUnits] = {};
+
+void t_glActiveTexture(GLenum unit) {
+    g_active_tex = unit;
+    glActiveTexture(unit);
+}
+
+void t_glBindTexture(GLenum target, GLuint texture) {
+    const unsigned unit = (unsigned)(g_active_tex - GL_TEXTURE0);
+    if (unit < (unsigned)kMaxTexUnits) {
+        if (g_bound_tex_valid[unit] && g_bound_tex_target[unit] == target && g_bound_tex[unit] == texture)
+            return;
+        g_bound_tex_valid[unit] = true;
+        g_bound_tex_target[unit] = target;
+        g_bound_tex[unit] = texture;
+    }
+    glBindTexture(target, texture);
+}
+
 void t_glBindBuffer(GLenum target, GLuint buffer) {
-    if (target == GL_ARRAY_BUFFER) g_array_buf = buffer;
-    else if (target == GL_ELEMENT_ARRAY_BUFFER) g_element_buf = buffer;
+    GLuint *slot = nullptr;
+    if (target == GL_ARRAY_BUFFER) slot = &g_array_buf;
+    else if (target == GL_ELEMENT_ARRAY_BUFFER) slot = &g_element_buf;
+    if (slot) {
+        if (*slot == buffer) return;  // already bound; the resulting GL state is identical
+        *slot = buffer;
+    }
     glBindBuffer(target, buffer);
 }
 
@@ -65,7 +99,19 @@ void t_glDeleteFramebuffers(GLsizei n, G<const GLuint> b) { glDeleteFramebuffers
 void t_glGenRenderbuffers(GLsizei n, G<GLuint> b) { glGenRenderbuffers(n, b); }
 void t_glDeleteRenderbuffers(GLsizei n, G<const GLuint> b) { glDeleteRenderbuffers(n, b); }
 void t_glGenTextures(GLsizei n, G<GLuint> b) { glGenTextures(n, b); }
-void t_glDeleteTextures(GLsizei n, G<const GLuint> b) { glDeleteTextures(n, b); }
+void t_glDeleteTextures(GLsizei n, G<const GLuint> b) {
+    // Deleting a bound texture unbinds it (GL leaves the unit at 0), so mirror that in the cache.
+    const GLuint *ids = b.get();
+    if (ids) {
+        for (GLsizei i = 0; i < n; i++) {
+            if (!ids[i]) continue;
+            for (int u = 0; u < kMaxTexUnits; u++) {
+                if (g_bound_tex_valid[u] && g_bound_tex[u] == ids[i]) g_bound_tex[u] = 0;
+            }
+        }
+    }
+    glDeleteTextures(n, b);
+}
 
 void t_glGetIntegerv(GLenum p, G<GLint> d) { glGetIntegerv(p, d); }
 void t_glGetFloatv(GLenum p, G<GLfloat> d) { glGetFloatv(p, d); }
@@ -122,17 +168,23 @@ namespace gl {
 void reset_context_state() {
     g_array_buf = 0;
     g_element_buf = 0;
+    g_active_tex = GL_TEXTURE0;
+    for (int u = 0; u < kMaxTexUnits; u++) {
+        g_bound_tex_valid[u] = false;
+        g_bound_tex[u] = 0;
+        g_bound_tex_target[u] = 0;
+    }
 }
 }  // namespace gl
 
 void register_gl_thunks() {
-    THUNK("glActiveTexture", glActiveTexture);
+    THUNK("glActiveTexture", t_glActiveTexture);
     THUNK("glAttachShader", glAttachShader);
     THUNK("glBindAttribLocation", glBindAttribLocation);
     THUNK("glBindBuffer", t_glBindBuffer);
     THUNK("glBindFramebuffer", glBindFramebuffer);
     THUNK("glBindRenderbuffer", glBindRenderbuffer);
-    THUNK("glBindTexture", glBindTexture);
+    THUNK("glBindTexture", t_glBindTexture);
     THUNK("glBlendColor", glBlendColor);
     THUNK("glBlendEquation", glBlendEquation);
     THUNK("glBlendEquationSeparate", glBlendEquationSeparate);

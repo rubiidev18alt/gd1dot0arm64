@@ -49,6 +49,7 @@ public final class ModernPlatformHelper {
     private static volatile String sDataDir = null;
     private static volatile String sPkgDataPrefix = null;
     private static volatile boolean sLocalGdps = false;
+    private static volatile boolean sRenderPriorityRaised = false;
 
     private ModernPlatformHelper() {}
 
@@ -90,6 +91,25 @@ public final class ModernPlatformHelper {
             Log.i(TAG, "Private offline GD 1.0 level server enabled (all boomlings.com traffic is local)");
         }
         applyImmersive(activity);
+        ModernFpsCounter.install(activity);
+    }
+
+    /**
+     * Called from {@code Cocos2dxRenderer.onDrawFrame} once per rendered frame, i.e. on the GL thread
+     * at display refresh rate. Keep this allocation-free: it only raises the render thread's priority
+     * once (so low-end devices and emulators schedule frames ahead of background work) and bumps the
+     * FPS counter, whose 500 ms sample window runs on the UI thread.
+     */
+    public static void onFrameRendered() {
+        if (!sRenderPriorityRaised) {
+            sRenderPriorityRaised = true;
+            try {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);
+            } catch (Throwable ignored) {
+                // Some emulators refuse priority changes; frames still render normally.
+            }
+        }
+        ModernFpsCounter.onFrame();
     }
 
     public static String resolveSavePath(String path) {
