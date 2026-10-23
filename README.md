@@ -1,10 +1,25 @@
-# Geometry Dash 1.02 — Native ARM64 Port for Modern Android (Android 16 / 16 KB Pages)
+# Geometry Dash 1.02 & 1.1 — Native ARM64 Ports for Modern Android (Android 16 / 16 KB Pages)
 
 A complete, 100%-accurate native **ARM64 (`arm64-v8a`)** port of **Geometry Dash 1.02 (build 4)** packaged as **`com.robtopx.geometryj102`** (**`gd 1.02 arm64`**) so it installs side-by-side alongside regular Geometry Dash (`com.robtopx.geometryjump`) with isolated save data — built for modern 64-bit-only Android devices including **Android 16 (API 36)**, **ARMv9 CPUs with hardware AArch32 execution removed** (Google Pixel 7 / 8 / 9 / 10, Snapdragon 8 Gen 3 / 8 Elite, Tensor G3–G5), and **16 KB kernel page sizes**.
 
+**v1.1.0** adds a second, fully co-installable port: **Geometry Dash 1.1 (build 5)** as **`com.robtopx.geometryj11`** (**`gd 1.1 arm64`**) — the update that introduced **Time Machine** and **mirror portals** — plus a large-screen text layout fix that applies to every variant.
+
 [![Download Latest APK Release](https://img.shields.io/github/v/release/rubiidev18alt/gd1dot0arm64?label=Download%20ARM64%20APK&style=for-the-badge)](https://github.com/rubiidev18alt/gd1dot0arm64/releases/latest)
 
+## Which APK Do I Want?
+
+| APK | Package | App name | What it is |
+|---|---|---|---|
+| `gd-1.1-arm64-com.robtopx.geometryj11.apk` | `com.robtopx.geometryj11` | **gd 1.1 arm64** | **New in v1.1.0.** Geometry Dash **1.1 (build 5)**: Time Machine, mirror portals, 1.1 achievements and icons. Co-installable. |
+| `gd-1.02-arm64-com.robtopx.geometryj102.apk` | `com.robtopx.geometryj102` | **gd 1.02 arm64** | Geometry Dash **1.02 (build 4)**, co-installable alongside an existing Geometry Dash install. |
+| `GeometryDash-1.02-arm64-android16.apk` | `com.robtopx.geometryjump` | **Geometry Dash** | Geometry Dash **1.02 (build 4)** under the original package id — replaces/upgrades an official install. |
+
+Every variant shares the same ARM64 Dynarmic bridge, the Android 16 / 16 KB-page hardening, the
+save-data fix and the large-screen text layout fix. Separate packages mean separate saves, so they
+install next to each other and next to a stock Geometry Dash.
+
 ---
+
 
 ## Why Geometry Dash 1.02 Needed an ARM64 Bridge
 
@@ -33,12 +48,68 @@ Instead of approximating game physics in a partial rewrite, this port executes t
 |---|---|---|
 | **ARM64 JIT & Re-Entrant CPU Core** | `host/src/cpu.{h,cpp}` | Patched [Dynarmic](https://github.com/azahar-emu/dynarmic) A32->AArch64 JIT (`ArchVersion::v8`, ARM64 `FastDispatch` inline assembly, CP15 TLS `TPIDRURO`/`TPIDRURW`, full register/VFP save & restore across nested JNI->Java->JNI callbacks). |
 | **16 KB Page-Safe 4 GiB Address Space** | `host/src/mem.cpp` | Continuous 4 GiB zero-masked guest arena (`g_base + u32`) with sub-host-page zeroing in `mem::unmap` so 4 KB guest `dlmalloc` `MMAP_CLEARS=1` invariants hold on both 4 KB and 16 KB Android 16 kernels. |
-| **ELF32 Relocator & Unwind Resolver** | `host/src/loader.{h,cpp}` | Loads `assets/arm32/libguestrt.so` and `assets/arm32/libgame.so` directly from uncompressed APK memory (`AAsset_getBuffer`), applies ARM32 relocations, exposes `PT_ARM_EXIDX` to `__gnu_Unwind_Find_exidx`, and runs all 226 C++ static constructors. |
+| **ELF32 Relocator & Unwind Resolver** | `host/src/loader.{h,cpp}` | Loads `assets/arm32/libguestrt.so` and `assets/arm32/libgame.so` directly from uncompressed APK memory (`AAsset_getBuffer`), applies ARM32 relocations, exposes `PT_ARM_EXIDX` to `__gnu_Unwind_Find_exidx`, and runs all of the guest binary's C++ static constructors (226 in 1.02, 229 in 1.1). |
 | **32<->64 JNI Bridge** | `host/src/jni_bridge.{h,cpp}` | Full 233-entry `JNINativeInterface` + `JavaVM` vtable translator with cached app `ClassLoader` fallback for native `pthread` workers, ART `CheckJNI` pending-exception clearing, local-ref slot reuse, and Modified UTF-8 sanitization. |
 | **Native ARM64 GLES2, Bionic & Socket Thunks** | `host/src/thunks_*.cpp` | Zero-overhead ARM64 thunks for all 69 OpenGL ES 2.0 imports (client-array vs VBO pointer tracking + surface-recreation state reset), Bionic LP32 `stat`/`dirent`/`tm`/`timeb`/`addrinfo`/`__fpclassifyd`/`arc4random`/XSI `strerror_r`, `pthread`/semaphores, and full IPv4 + IPv6/NAT64 POSIX sockets & DNS. |
 | **ARM32 Guest Runtime + `zlib` 1.3.1** | `guest/` | Self-contained ARMv7 VFPv3-D16 `libguestrt.so` providing `setjmp`/`longjmp`, EABI runtime helpers, Bionic `_ctype_`/`__sF`, `dlmalloc`, `stb_sprintf` stdio, `getopt`, `memrchr`, and full `zlib` 1.3.1 (`inflate*`, `deflate*`, `gz*`, `crc32`, `uncompress`). |
 | **Android 16 Platform & Audio Shim** | `java/.../ModernPlatformHelper.java`, `java/.../ModernMusicController.java`, `scripts/patch_manifest_and_smali.py` | Targets API 36 (`minSdkVersion=24`, `targetSdkVersion=36`) with `WindowInsetsController` edge-to-edge sticky immersive fullscreen, `DISPLAY_CUTOUT_MODE_ALWAYS`, `setPreserveEGLContextOnPause(true)`, race-free `ModernMusicController` (`SEEK_CLOSEST` + `USAGE_GAME`, preserving exact paused decoder position on unpause), deterministic AES-128 atomic save persistence (`SimpleCrypto` replacement + multi-user data path virtualization), `ANDROID_ID`-based persistent UUID, `NetworkCapabilities`, `RECEIVER_EXPORTED`, and neutralized legacy Flurry/Chartboost SDKs. |
 | **Private Offline 1.0 GDPS (`com.robtopx.geomgdps102`)** | `host/src/local_gdps.{h,cpp}`, `scripts/build_gdhistory_db.py`, `tests/guest_gdps_probe.c` | Embeds every archived 1.0-era online level (IDs `128..1941`) from [GD History](https://history.geometrydash.eu) as a compact `GD10DB01` archive (`assets/gdps/levels_1_0.bin`), redirects `www.boomlings.com` DNS + TCP to an in-process read-only HTTP server on `127.0.0.1` (random loopback port), rewrites post-1.0 level strings back to native `kS1..kA1` format, and hard-blocks every `upload*`/`delete*` endpoint. |
+
+---
+
+## Geometry Dash 1.1 Variant (`com.robtopx.geometryj11`)
+
+Mirror mode and Time Machine cannot be back-ported to 1.02 by editing data: in 1.02 the
+collision/portalling logic itself only knows the gravity, ship and cube portals, and the
+mirror portal object does not exist in its `ObjectToolbox`. So v1.1.0 ships the **real
+Geometry Dash 1.1 (build 5) `libgame.so`** — unmodified, `SHA-256:
+854f73b21bb555edc206bd89d024c931d3eca630a1e32c7c2c191182e8eaed20`, 19,482,603 bytes — through the
+same ARM64 bridge, under its own package id and app label:
+
+```text
+dist/gd-1.1-arm64-com.robtopx.geometryj11.apk   (package com.robtopx.geometryj11, label "gd 1.1 arm64")
+```
+
+* **New level: Time Machine**, with its own soundtrack, achievements, and its icon/icon colour unlocks
+  for **both colour 1 and colour 2**.
+* **Mirror portals**, blue and orange, usable in-game **and placeable in the editor**, behaving exactly
+  as RobTop shipped them in 1.1.
+* Everything else in 1.1 comes with it: the 1.1 level list, achievements, icon shop, and any other
+  balance or content changes present in build 5.
+* Saves are separate from the 1.02 variants, so progress in one does not affect the other.
+
+The 1.1 binary was confirmed compatible with the bridge before shipping: it imports the **same 277
+native symbols with a zero-symbol diff against 1.02**, and CI boots it every build — `libgame.so`
+loads at `0x08025000..0x08442000` with 11,700 exports, **229** C++ static constructors (1.02 has 226),
+`unresolved=0`, `JNI_OnLoad = 0x10004`, and all three expected Java patch targets
+(`Cocos2dxBitmap.createTextBitmap`, `initNativeObject`, `Cocos2dxRenderer.nativeRender`) present with
+byte-identical signatures.
+
+### Not in v1.1.0: the 1.9 PC UHD texture set
+
+The planned 1.9 PC UHD (4x) art back-port is **not** part of this release. Geometry Dash 1.9 on
+Android only ever shipped the 2x `-hd` set, the 4x UHD assets are PC-only, and no verified PC UHD
+pack could be obtained to embed. Rather than ship upscaled or invented art, the release keeps the
+original textures and says so here.
+
+---
+
+## Large-Screen Text Layout Fix
+
+The 2013 cocos2d-x `Cocos2dxBitmap.createTextBitmap` was written for 480x320 phones. It measures text
+with integer truncation and never consults `GL_MAX_TEXTURE_SIZE`, so on a modern large display a long
+label can request a bitmap wider/taller than the GPU allows and simply vanishes.
+
+`ModernTextLayout` (patched into the app in place of the original method, keeping the identical
+`createTextBitmap(String, String, int, int, int, int)` JNI contract) fixes this without touching the
+native engine:
+
+* float-precision measurement instead of integer truncation,
+* word-boundary wrapping that matches the original line-break rules,
+* explicit `\n` handling, line limits and ellipsis,
+* clamping to the device's real `GL_MAX_TEXTURE_SIZE`, scaling the font down instead of failing.
+
+Both the 1.02 and the 1.1 variants use it.
 
 ---
 
@@ -69,10 +140,39 @@ dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
 
 (You can also override `GD102_PACKAGE_NAME` and `GD102_APP_NAME` before running `./scripts/build_apk.sh` if you want a custom package ID or label.)
 
+### Building another variant (1.1, original package id, private server)
+
+The same script builds every variant; only the input APK and the package/label change:
+
+```bash
+# GD 1.1 (build 5) — Time Machine + mirror portals, co-installable
+./scripts/fetch_deps.sh --with-apk11 third_party/Geometry.Dash.ver.1.1.build.5.apk
+GD102_VERSION=1.1 \
+GD102_INPUT_APK=third_party/Geometry.Dash.ver.1.1.build.5.apk \
+GD102_INPUT_SHA256="" \
+GD102_PACKAGE_NAME=com.robtopx.geometryj11 \
+GD102_APP_NAME="gd 1.1 arm64" \
+  ./scripts/build_apk.sh \
+    third_party/Geometry.Dash.ver.1.1.build.5.apk \
+    dist/gd-1.1-arm64-com.robtopx.geometryj11.apk
+
+# GD 1.02 under the original package id
+GD102_PACKAGE_NAME=com.robtopx.geometryjump \
+GD102_APP_NAME="Geometry Dash" \
+  ./scripts/build_apk.sh \
+    third_party/Geometry.Dash.ver.1.02.build.4.apk \
+    dist/GeometryDash-1.02-arm64-android16.apk
+```
+
+`GD102_INPUT_SHA256=""` deliberately means "this input is not the pinned 1.02 APK"; the script only
+falls back to the 1.02 hash when the variable is unset.
+
 To verify any built APK manually:
 
 ```bash
 python3 scripts/verify_apk.py dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
+python3 scripts/verify_apk.py dist/gd-1.1-arm64-com.robtopx.geometryj11.apk \
+    --orig-apk third_party/Geometry.Dash.ver.1.1.build.5.apk
 ```
 
 ---
@@ -81,14 +181,20 @@ python3 scripts/verify_apk.py dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
 
 `tests/gd102_verify_runner.cpp` boots a real OpenJDK `JavaVM` + Mesa headless `1280x720` OpenGL ES 2.0 Pbuffer context on Linux ARM64, loads `libguestrt.so` and unmodified `libgame.so` through the Dynarmic ARM64 JIT, and verifies:
 
-- `0` unresolved symbols across all 284 `UND` imports of `libgame.so`
-- All `226` C++ static initializers execute cleanly
+- `0` unresolved symbols across all `UND` imports of `libgame.so` (the 1.02 and 1.1 binaries both
+  import the identical set of 277 native symbols)
+- All `226` C++ static initializers of GD 1.02 execute cleanly (and all `229` of GD 1.1)
 - 16 KB page-size sub-page `mem::unmap` zeroing invariant
 - `LoadingLayer` asset decompression (`zlib` + `libpng` + `.plist` + `.fnt`) -> `MenuLayer` transition (`BaseRobTopActivity.loadingFinished()` + `menuLoop.mp3`)
 - `1280x720` OpenGL ES 2.0 framebuffer pixel & color-bucket validation (`GL_NO_ERROR`)
 - Re-entrant JNI `Cocos2dxBitmap.createTextBitmap` -> `nativeInitBitmapDC` callbacks
 - Touch & hardware Back key (`KEYCODE_BACK`) navigation (`MenuLayer` -> `LevelSelectLayer` -> `PlayLayer`)
 - Deterministic AES-128 encrypted save persistence & reload decryption round-trip (`CCGameManager.dat` and `CCGameStore.dat`)
+
+CI runs the suite twice per build: once end-to-end against the 1.02 APK, and once against the 1.1 APK to prove
+that the newer guest binary loads, relocates, runs its constructors and reaches `JNI_OnLoad` with zero unresolved
+symbols. The expected constructor count is passed to `tests/gd102_verify_runner.cpp` as an argument, so a new
+variant only needs its own number instead of a code change.
 
 ---
 
