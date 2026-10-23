@@ -606,8 +606,8 @@ jobs:
 
           ### APK Variants Included
           1. **\`${GD11_APK}\`** — **Geometry Dash 1.1** (\`package="com.robtopx.geometryj11"\`, app name **\`gd 1.1 arm64\`**). Co-installable; adds Time Machine, mirror portals, 1.1 achievements and icons.
-          2. **\`${APK_NAME}\`** — **GD 1.02, co-installable** (\`package="com.robtopx.geometryj102\"\`, app name **\`gd 1.02 arm64\`**), official online servers.
-          3. **\`${ORIG_PKG_APK}\`** — **GD 1.02, original package id** (\`package="com.robtopx.geometryjump\"\`, app name **\`Geometry Dash\`**), official online servers.
+          2. **\`${APK_NAME}\`** — **GD 1.02, co-installable** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**), official online servers.
+          3. **\`${ORIG_PKG_APK}\`** — **GD 1.02, original package id** (\`package="com.robtopx.geometryjump"\`, app name **\`Geometry Dash\`**), official online servers.
 
           ### Notes
           - The 1.9 PC UHD (4x) texture back-port is **not** in this release: those assets are PC-only and were not available to the build, and 1.02 already ships the 2x \`-hd\` set.
