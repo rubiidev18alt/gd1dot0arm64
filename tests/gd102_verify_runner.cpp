@@ -15,6 +15,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -25,6 +30,12 @@
 extern "C" {
 bool gd102_host_boot_from_dir(JavaVM *vm, JNIEnv *env, const char *arm32_dir, const char *data_dir,
                               u32 *out_ctors, u32 *out_unresolved);
+bool gd102_host_enable_local_gdps(const char *db_path, const char *data_dir, u32 *out_levels, u16 *out_port);
+void gd102_host_local_gdps_stats(u32 *out_requests, u32 *out_blocked_uploads);
+int gd102_host_run_guest_probe(JNIEnv *env, const char *so_path);
+u32 gd102_host_find_game_sym_containing(const char *needle, char *out_name, u32 out_name_size);
+u32 gd102_host_game_export_count();
+u32 gd102_host_call_guest(JNIEnv *env, u32 fn_addr, u32 argc, const u32 *argv);
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxActivity_nativeSetPaths(JNIEnv *, jclass, jstring);
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxBitmap_nativeInitBitmapDC(JNIEnv *, jclass, jint, jint, jbyteArray);
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeInit(JNIEnv *, jclass, jint, jint);
@@ -193,6 +204,50 @@ size_t file_size_or_zero(const std::string &path) {
     return stat(path.c_str(), &st) == 0 ? (size_t)st.st_size : 0;
 }
 
+// Minimal host-side HTTP/1.1 POST client used to validate the embedded GD 1.0 private server
+// exactly the way libgame.so's CCHttpClient does (form body + secret, plain HTTP on loopback).
+std::string gdps_http_post(u16 port, const std::string &script, const std::string &body) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return "<socket-failed>";
+    struct timeval tv{5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in sa{};
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(port);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        close(fd);
+        return "<connect-failed>";
+    }
+
+    std::string req = "POST /database/" + script + " HTTP/1.0\r\n"
+        "Host: www.boomlings.com\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n\r\n" + body;
+    size_t sent = 0;
+    while (sent < req.size()) {
+        ssize_t n = send(fd, req.data() + sent, req.size() - sent, 0);
+        if (n <= 0) break;
+        sent += (size_t)n;
+    }
+
+    std::string raw;
+    char buf[8192];
+    while (true) {
+        ssize_t n = recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        raw.append(buf, (size_t)n);
+    }
+    close(fd);
+
+    size_t sep = raw.find("\r\n\r\n");
+    if (sep == std::string::npos) return "<no-response>";
+    return raw.substr(sep + 4);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -237,6 +292,91 @@ int main(int argc, char **argv) {
 
     CHECK(test_16kb_subpage_unmap(), "16 KB sub-page mem::unmap zeroing invariant failed");
     printf("[VERIFY] 16 KB page-size sub-page unmap zeroing invariant PASSED\n");
+
+    // ------------------------------------------------------------------
+    // Embedded private Geometry Dash 1.0 server (com.robtopx.geomgdps102 variant)
+    // ------------------------------------------------------------------
+    const std::string gdps_db = argc > 6 ? argv[6] : "";
+    const std::string probe_so = argc > 7 ? argv[7] : "";
+    u16 gdps_port = 0;
+    bool gdps_active = false;
+    if (!gdps_db.empty()) {
+        u32 gdps_levels = 0;
+        CHECK(gd102_host_enable_local_gdps(gdps_db.c_str(), data_dir.c_str(), &gdps_levels, &gdps_port),
+              "Failed to initialize embedded GD 1.0 server from %s", gdps_db.c_str());
+        printf("[VERIFY] Local GDPS archive loaded: levels=%u, listening on 127.0.0.1:%u\n", gdps_levels,
+               (unsigned)gdps_port);
+        gdps_active = true;
+        CHECK(gdps_levels >= 350, "Expected at least 350 archived 1.0 levels, got %u", gdps_levels);
+        CHECK(gdps_port != 0, "Local GDPS listener did not bind a port");
+
+        const std::string secret = "&secret=Wmfd2893gb7";
+
+        std::string recent = gdps_http_post(gdps_port, "getGJLevels.php", "type=4&str=&diff=-&len=-&page=0" + secret);
+        CHECK(recent.find('#') != std::string::npos, "getGJLevels response missing page/user delimiters");
+        size_t first_pos = recent.find("1:");
+        CHECK(first_pos != std::string::npos, "getGJLevels(type=4) returned no levels (got '%.120s')",
+              recent.c_str());
+        long newest_id = strtol(recent.c_str() + first_pos + 2, nullptr, 10);
+        CHECK(newest_id >= 1900, "getGJLevels(type=4) newest level id %ld is below the 1.0 archive tail (got '%.80s')",
+              newest_id, recent.c_str());
+
+        std::string by_id = gdps_http_post(gdps_port, "getGJLevels.php", "type=0&str=128&diff=-&len=-&page=0" + secret);
+        CHECK(by_id.find("1:128:") != std::string::npos,
+              "getGJLevels(type=0,str=128) did not return level 128 (got '%.120s')", by_id.c_str());
+
+        std::string search = gdps_http_post(gdps_port, "getGJLevels.php", "type=0&str=jump&diff=-&len=-&page=0" + secret);
+        CHECK(search.find("1:") != std::string::npos, "getGJLevels name search returned no levels");
+
+        std::string dl = gdps_http_post(gdps_port, "downloadGJLevel.php", "levelID=128&inc=1" + secret);
+        CHECK(dl.find(":1:128:") != std::string::npos && dl.find(":4:kS1,") != std::string::npos &&
+                  dl.find(",kA1,") != std::string::npos && dl.find(":13:") != std::string::npos,
+              "downloadGJLevel(128) missing level string/format fields (got '%.160s')", dl.c_str());
+
+        // The level payload must be native GD 1.02 format: `kS1..kS6` header plus `;id,x,y;...` objects.
+        std::string lvl_data = dl.substr(dl.find(":4:") + 3);
+        lvl_data = lvl_data.substr(0, lvl_data.find(":5:"));
+        size_t objs = 0;
+        for (size_t pos = 0; (pos = lvl_data.find(';', pos)) != std::string::npos; pos++) objs++;
+        CHECK(objs >= 100, "downloadGJLevel(128) level string has only %zu object separators", objs);
+
+        // The creator id embedded in the payload must resolve through the users-by-ID search filter.
+        size_t uid_pos = dl.find(":6:");
+        CHECK(uid_pos != std::string::npos, "downloadGJLevel(128) missing creator id");
+        std::string uid = dl.substr(uid_pos + 3, dl.find(':', uid_pos + 3) - (uid_pos + 3));
+        std::string user_levels =
+            gdps_http_post(gdps_port, "getGJLevels.php", "type=5&str=" + uid + "&diff=-&len=-&page=0" + secret);
+        CHECK(user_levels.find("1:128:") != std::string::npos,
+              "getGJLevels(type=5, user %s) did not return level 128 (got '%.120s')", uid.c_str(),
+              user_levels.c_str());
+        printf("[VERIFY] Local GDPS creator lookup: user %s owns level 128\n", uid.c_str());
+
+        std::string blocked_up = gdps_http_post(
+            gdps_port, "uploadGJLevel.php",
+            "udid=x&userName=x&levelName=x&levelDesc=x&levelString=kS1,1;&levelVersion=1&levelLength=0&"
+            "audioTrack=0&gameVersion=1" + secret);
+        CHECK(blocked_up == "-1", "uploadGJLevel was NOT blocked (got '%.80s')", blocked_up.c_str());
+        std::string blocked_del = gdps_http_post(gdps_port, "deleteGJLevelUser.php", "levelID=128" + secret);
+        CHECK(blocked_del == "-1", "deleteGJLevelUser was NOT blocked (got '%.80s')", blocked_del.c_str());
+
+        std::string like = gdps_http_post(gdps_port, "likeGJLevel.php", "levelID=128" + secret);
+        CHECK(like == "1", "likeGJLevel failed (got '%.80s')", like.c_str());
+        std::string rate = gdps_http_post(gdps_port, "rateGJLevel.php", "levelID=128&rating=5" + secret);
+        CHECK(rate == "1", "rateGJLevel failed (got '%.80s')", rate.c_str());
+
+        u32 handled = 0, blocked = 0;
+        gd102_host_local_gdps_stats(&handled, &blocked);
+        printf("[VERIFY] Local GDPS host-side API: requests=%u, blocked_uploads=%u\n", handled, blocked);
+        CHECK(handled >= 8, "Expected >= 8 handled GDPS requests, got %u", handled);
+        CHECK(blocked >= 2, "Expected blocked upload/delete counters, got %u", blocked);
+
+        if (!probe_so.empty()) {
+            int probe_rc = gd102_host_run_guest_probe(env, probe_so.c_str());
+            printf("[VERIFY] Real ARM32 guest probe gethostbyname/www.boomlings.com -> local GDPS: rc=0x%x\n", probe_rc);
+            CHECK(probe_rc == 0, "Real ARM32 guest GDPS probe failed with bitmask 0x%x", probe_rc);
+            CHECK(!env->ExceptionCheck(), "Java exception raised during guest GDPS probe");
+        }
+    }
 
     // Set APK path so CCFileUtilsAndroid reads all 136 assets directly from the rebuilt APK!
     jstring j_apk = env->NewStringUTF(apk_path.c_str());
@@ -496,6 +636,41 @@ int main(int argc, char **argv) {
     CHECK(dec_xml.find("<k>playerName</k>") != std::string::npos,
           "SimpleCrypto deterministic AES-128 round-trip failed");
     printf("[VERIFY] SimpleCrypto deterministic AES-128 round-trip PASSED (%zu bytes)\n", dec_xml.size());
+
+    // ------------------------------------------------------------------
+    // End-to-end: drive libgame.so's own CCHttpClient stack (real guest ARM32 code) through the
+    // bridge so the private GD 1.0 server is validated on the exact code path the game uses.
+    // ------------------------------------------------------------------
+    if (gdps_active) {
+        char sym_name[192] = "";
+        u32 dl_fn = gd102_host_find_game_sym_containing("downloadLevel", sym_name, sizeof(sym_name));
+        printf("[VERIFY] libgame.so exported symbols=%u, GameLevelManager downloadLevel symbol='%s' @ 0x%08x\n",
+               gd102_host_game_export_count(), sym_name, dl_fn);
+        if (dl_fn) {
+            u32 before_req = 0, before_blocked = 0, after_req = 0, after_blocked = 0;
+            gd102_host_local_gdps_stats(&before_req, &before_blocked);
+            const u32 args[1] = {128};
+            gd102_host_call_guest(env, dl_fn, 1, args);
+            for (int i = 0; i < 150; i++) {
+                usleep(16667);
+                Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender(env, cls_renderer);
+            }
+            gd102_host_local_gdps_stats(&after_req, &after_blocked);
+            printf("[VERIFY] Guest libgame.so HTTP -> private GDPS: requests %u -> %u\n", before_req, after_req);
+            CHECK(after_req > before_req,
+                  "libgame.so's own HTTP stack never reached the private GDPS server (%u -> %u)", before_req,
+                  after_req);
+            CHECK(!env->ExceptionCheck(), "Java exception while libgame.so downloaded a level from the GDPS");
+            FrameStats lvl_info_stats = inspect_framebuffer(W, H, (data_dir + "/level_info_frame.ppm").c_str());
+            printf("[VERIFY] LevelInfoLayer after GDPS download: non_black=%zu, buckets=%zu, hash=0x%016llx\n",
+                   lvl_info_stats.non_black, lvl_info_stats.unique_buckets,
+                   (unsigned long long)lvl_info_stats.fnv_hash);
+            CHECK(glGetError() == GL_NO_ERROR, "OpenGL ES error after GDPS level download");
+        } else {
+            printf("[VERIFY] (info) downloadLevel is not exported by libgame.so; the real ARM32 guest probe "
+                   "already covers gethostbyname/connect/HTTP redirection\n");
+        }
+    }
 
     printf("\n=== ALL REAL ARM64 EXECUTION, GLES2 RENDERING, TOUCH & SAVE VERIFICATION CHECKS PASSED ===\n");
     return 0;

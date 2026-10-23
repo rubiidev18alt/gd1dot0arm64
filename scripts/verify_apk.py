@@ -16,6 +16,7 @@ REQUIRED_EXPORTS = [
     "JNI_OnLoad",
     "Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeBridgeInit",
     "Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeOnSurfaceCreated",
+    "Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeLocalGdpsEnabled",
     "Java_com_customRobTop_JniToCpp_didCacheInterstitial",
     "Java_com_customRobTop_JniToCpp_didClickInterstitial",
     "Java_com_customRobTop_JniToCpp_didCloseInterstitial",
@@ -92,12 +93,61 @@ def parse_elf64_exports_and_align(elf: bytes) -> tuple[int, list[int], set[str]]
     return e_machine, load_aligns, exports
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <path_to_apk>", file=sys.stderr)
-        sys.exit(2)
+def verify_local_gdps(zf: zipfile.ZipFile, infos: dict, raw_apk: bytes) -> None:
+    if "assets/gdps/levels_1_0.bin" not in infos:
+        raise RuntimeError("GDPS variant is missing assets/gdps/levels_1_0.bin")
+    if "Lcom/robtopx/geometryjump/ModernPlatformHelper;" not in zf.read("classes2.dex").decode(
+        "latin-1"
+    ):
+        raise RuntimeError("ModernPlatformHelper class missing from classes2.dex")
+    if b"nativeLocalGdpsEnabled" not in zf.read("classes2.dex"):
+        raise RuntimeError("ModernPlatformHelper.nativeLocalGdpsEnabled missing from classes2.dex")
 
-    apk_path = sys.argv[1]
+    info = infos["assets/gdps/levels_1_0.bin"]
+    if info.compress_type != zipfile.ZIP_STORED:
+        raise RuntimeError("assets/gdps/levels_1_0.bin must be STORED uncompressed")
+    blob = zf.read("assets/gdps/levels_1_0.bin")
+    if blob[:8] != b"GD10DB01":
+        raise RuntimeError(f"Unexpected GDPS database magic: {blob[:8]!r}")
+    db_ver, level_count = struct.unpack_from("<II", blob, 8)
+    if db_ver != 1:
+        raise RuntimeError(f"Unsupported GDPS database version {db_ver}")
+    if not (350 <= level_count <= 2000):
+        raise RuntimeError(f"Implausible GDPS level count {level_count}")
+
+    # Verify the variable-length record stream is self-consistent.
+    off = 16
+    ids = []
+    for _ in range(level_count):
+        if off + 48 > len(blob):
+            raise RuntimeError("GDPS database truncated in record header")
+        level_id = struct.unpack_from("<i", blob, off)[0]
+        name_len, desc_len, user_len = struct.unpack_from("<HHH", blob, off + 34)
+        raw_len, comp_len = struct.unpack_from("<II", blob, off + 40)
+        off += 48 + name_len + desc_len + user_len + comp_len
+        if off > len(blob):
+            raise RuntimeError("GDPS database truncated in record payload")
+        if not (128 <= level_id <= 1941):
+            raise RuntimeError(f"GDPS level ID {level_id} outside 128..1941")
+        if raw_len == 0 or comp_len == 0:
+            raise RuntimeError(f"GDPS level {level_id} has empty level string")
+        ids.append(level_id)
+    if off != len(blob):
+        raise RuntimeError(f"GDPS database trailing bytes: {len(blob) - off}")
+    if len(set(ids)) != len(ids) or ids != sorted(ids):
+        raise RuntimeError("GDPS database level IDs are not unique/ascending")
+    print(
+        f"  - Local GDPS archive: {len(blob)} bytes, {level_count} levels "
+        f"(IDs {ids[0]}..{ids[-1]}), upload endpoints blocked"
+    )
+
+
+def main() -> None:
+    apk_path = sys.argv[1] if len(sys.argv) >= 2 else ""
+    local_gdps = "--local-gdps" in sys.argv and sys.argv[sys.argv.index("--local-gdps") + 1] == "1"
+    if not apk_path:
+        print(f"Usage: {sys.argv[0]} <path_to_apk> [--local-gdps 0|1]", file=sys.stderr)
+        sys.exit(2)
     with open(apk_path, "rb") as f:
         raw_apk = f.read()
 
@@ -156,10 +206,21 @@ def main() -> None:
 
         # 4. Original game assets + STORED audio/resources check
         orig_assets = [
-            k for k in infos if k.startswith("assets/") and not k.startswith("assets/arm32/") and not k.endswith("/")
+            k
+            for k in infos
+            if k.startswith("assets/")
+            and not k.startswith("assets/arm32/")
+            and not k.startswith("assets/gdps/")
+            and not k.endswith("/")
         ]
         if len(orig_assets) != 136:
             raise RuntimeError(f"Expected all 136 original GD 1.02 assets, found {len(orig_assets)}")
+
+        # 4b. Optional private offline GD 1.0 GDPS level archive
+        if local_gdps:
+            verify_local_gdps(zf, infos, raw_apk)
+        elif "assets/gdps/levels_1_0.bin" in infos:
+            raise RuntimeError("Unexpected assets/gdps/levels_1_0.bin in non-GDPS variant")
 
         for name, info in infos.items():
             if name == "resources.arsc" or name.endswith(".mp3") or name.endswith(".ogg"):

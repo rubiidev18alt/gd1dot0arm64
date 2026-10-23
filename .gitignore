@@ -14,3 +14,4 @@ third_party/apktool.jar
 *.a
 __pycache__/
 .DS_Store
+third_party/levels_1_0.bin

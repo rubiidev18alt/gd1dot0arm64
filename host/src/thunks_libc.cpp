@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "abi.h"
+#include "local_gdps.h"
 #include "paths.h"
 
 #include <arpa/inet.h>
@@ -994,6 +995,16 @@ int t_socket(int domain, int type, int protocol) {
 }
 
 int t_connect(int fd, G<const struct sockaddr> addr, u32 addrlen) {
+    if (local_gdps::is_enabled() && addr.a && addrlen >= sizeof(struct sockaddr_in)) {
+        const auto *sin = (const struct sockaddr_in *)addr.get();
+        if (sin->sin_family == AF_INET &&
+            sin->sin_addr.s_addr == htonl(local_gdps::VIRTUAL_BOOMLINGS_IPV4_HOST_ORDER)) {
+            struct sockaddr_in redir = *sin;
+            redir.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            redir.sin_port = htons(local_gdps::port());
+            return check(connect(fd, (const struct sockaddr *)&redir, sizeof(redir)));
+        }
+    }
     return check(connect(fd, addr.a ? addr.get() : nullptr, (socklen_t)addrlen));
 }
 
@@ -1133,9 +1144,16 @@ int t_getaddrinfo(G<const char> node, G<const char> service, u32 hints_g, G<u32>
         hints.ai_socktype = rd<s32>(hints_g + 8);
         hints.ai_protocol = rd<s32>(hints_g + 12);
     }
+    const char *lookup_node = node.a ? node.get() : nullptr;
+    if (local_gdps::is_enabled() && lookup_node && local_gdps::is_boomlings_host(lookup_node)) {
+        lookup_node = "127.0.0.77";
+        hints.ai_flags = AI_NUMERICHOST;
+        hints.ai_family = AF_INET;
+        if (hints.ai_socktype == 0) hints.ai_socktype = SOCK_STREAM;
+    }
     struct addrinfo *hres = nullptr;
-    int rc = getaddrinfo(node.a ? node.get() : nullptr, service.a ? service.get() : nullptr,
-                         hints_g ? &hints : nullptr, &hres);
+    int rc = getaddrinfo(lookup_node, service.a ? service.get() : nullptr,
+                         (hints_g || lookup_node != (node.a ? node.get() : nullptr)) ? &hints : nullptr, &hres);
     if (rc != 0) return xlate_eai_to_bionic(rc);
 
     std::vector<u32> blocks;
@@ -1194,17 +1212,22 @@ void t_freeaddrinfo(u32 ai) {
 
 u32 t_gethostbyname(G<const char> name) {
     if (!name.a) return 0;
-    struct addrinfo hints{};
-    hints.ai_family = AF_INET;
-    struct addrinfo *res = nullptr;
-    if (getaddrinfo(name.get(), nullptr, &hints, &res) != 0 || !res) return 0;
+    u32 ipv4 = 0;
+    if (local_gdps::is_enabled() && local_gdps::is_boomlings_host(name.get())) {
+        ipv4 = htonl(local_gdps::VIRTUAL_BOOMLINGS_IPV4_HOST_ORDER);
+    } else {
+        struct addrinfo hints{};
+        hints.ai_family = AF_INET;
+        struct addrinfo *res = nullptr;
+        if (getaddrinfo(name.get(), nullptr, &hints, &res) != 0 || !res) return 0;
+        auto *sin = (const struct sockaddr_in *)res->ai_addr;
+        ipv4 = sin->sin_addr.s_addr;
+        freeaddrinfo(res);
+    }
 
     // Bionic LP32 struct hostent (20 bytes): h_name (+0), h_aliases (+4), h_addrtype (+8), h_length (+12), h_addr_list (+16).
     thread_local u32 hent = 0;
     if (!hent) hent = mem::halloc(64, 8);
-    auto *sin = (const struct sockaddr_in *)res->ai_addr;
-    u32 ipv4 = sin->sin_addr.s_addr;
-    freeaddrinfo(res);
 
     u32 name_p = hent + 36;
     snprintf((char *)g2h(name_p), 28, "%s", name.get());

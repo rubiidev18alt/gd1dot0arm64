@@ -11,6 +11,16 @@ PACKAGE_NAME="${GD102_PACKAGE_NAME:-com.robtopx.geometryj102}"
 APP_NAME="${GD102_APP_NAME:-gd 1.02 arm64}"
 OUT_APK="${2:-$ROOT/dist/gd-1.02-arm64-${PACKAGE_NAME}.apk}"
 
+# Optional: embed the private local 1.0 GDPS level archive (scripts/build_gdhistory_db.py output).
+# Set GD102_LOCAL_GDPS=1 (and GD102_GDPS_DB=/path/levels_1_0.bin) to build the offline-server variant.
+LOCAL_GDPS="${GD102_LOCAL_GDPS:-0}"
+GDPS_DB="${GD102_GDPS_DB:-$ROOT/third_party/levels_1_0.bin}"
+if [ "$LOCAL_GDPS" = "1" ] && [ ! -f "$GDPS_DB" ]; then
+    echo "ERROR: GD102_LOCAL_GDPS=1 but level archive '$GDPS_DB' is missing." >&2
+    echo "       Run: python3 scripts/build_gdhistory_db.py --out third_party/levels_1_0.bin --orig-apk \"$ORIG_APK\"" >&2
+    exit 1
+fi
+
 # 1. Discover Android SDK, NDK, Build-Tools (35+/36+ for zipalign -P 16), and android.jar (API 36 preferred)
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
@@ -107,10 +117,17 @@ rm -rf "$WORK/decoded/lib/armeabi" "$WORK/decoded/lib/armeabi-v7a"
 cp "$WORK/libguestrt.so" "$WORK/decoded/assets/arm32/libguestrt.so"
 cp "$WORK/libgame_arm64.so" "$WORK/decoded/lib/arm64-v8a/libgame.so"
 
-echo "==> Applying Android 16 + ARM64 manifest & smali patches (package=$PACKAGE_NAME, app_name='$APP_NAME')"
+if [ "$LOCAL_GDPS" = "1" ]; then
+    mkdir -p "$WORK/decoded/assets/gdps"
+    cp "$GDPS_DB" "$WORK/decoded/assets/gdps/levels_1_0.bin"
+    echo "==> Embedded private GD 1.0 GDPS level archive: $(stat -c%s "$GDPS_DB") bytes ($(sha256sum "$GDPS_DB" | cut -d' ' -f1))"
+fi
+
+echo "==> Applying Android 16 + ARM64 manifest & smali patches (package=$PACKAGE_NAME, app_name='$APP_NAME', local_gdps=$LOCAL_GDPS)"
 python3 "$ROOT/scripts/patch_manifest_and_smali.py" "$WORK/decoded" \
     --package "$PACKAGE_NAME" \
-    --app-name "$APP_NAME"
+    --app-name "$APP_NAME" \
+    --local-gdps "$LOCAL_GDPS"
 
 echo "==> Rebuilding APK via Apktool"
 java -jar "$ROOT/third_party/apktool.jar" b "$WORK/decoded" -o "$WORK/rebuilt_raw.apk"
@@ -128,6 +145,8 @@ def should_store(name: str) -> bool:
     if name.startswith("lib/") and name.endswith(".so"):
         return True
     if name.startswith("assets/arm32/") and name.endswith(".so"):
+        return True
+    if name.startswith("assets/gdps/") and name.endswith(".bin"):
         return True
     lower = name.lower()
     return lower.endswith((".mp3", ".ogg", ".png"))
@@ -198,7 +217,7 @@ echo "$BADGING" | grep -Fq "launchable-activity: name='com.robtopx.geometryjump.
     echo "ERROR: APK launchable-activity missing com.robtopx.geometryjump.GeometryJump" >&2
     exit 1
 }
-python3 "$ROOT/scripts/verify_apk.py" "$OUT_APK"
+python3 "$ROOT/scripts/verify_apk.py" "$OUT_APK" --local-gdps "$LOCAL_GDPS"
 
 rm -rf "$WORK"
 echo "==> Built verified ARM64 APK: $OUT_APK"

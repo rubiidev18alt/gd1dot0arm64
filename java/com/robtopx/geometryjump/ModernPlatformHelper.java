@@ -48,6 +48,7 @@ public final class ModernPlatformHelper {
 
     private static volatile String sDataDir = null;
     private static volatile String sPkgDataPrefix = null;
+    private static volatile boolean sLocalGdps = false;
 
     private ModernPlatformHelper() {}
 
@@ -55,6 +56,13 @@ public final class ModernPlatformHelper {
             Context context, AssetManager assetManager, String apkPath, String dataDir);
 
     public static native void nativeOnSurfaceCreated();
+
+    /** True when the private offline Geometry Dash 1.0 level server is baked into this APK. */
+    public static native boolean nativeLocalGdpsEnabled();
+
+    public static boolean isLocalGdpsEnabled() {
+        return sLocalGdps;
+    }
 
     public static void initBridge(Activity activity) {
         if (activity == null) return;
@@ -73,6 +81,14 @@ public final class ModernPlatformHelper {
         }
         ModernMusicController.init(app);
         nativeBridgeInit(app, app.getAssets(), apkPath, dataDir);
+        try {
+            sLocalGdps = nativeLocalGdpsEnabled();
+        } catch (Throwable t) {
+            sLocalGdps = false;
+        }
+        if (sLocalGdps) {
+            Log.i(TAG, "Private offline GD 1.0 level server enabled (all boomlings.com traffic is local)");
+        }
         applyImmersive(activity);
     }
 
@@ -233,6 +249,9 @@ public final class ModernPlatformHelper {
     }
 
     public static boolean isNetworkAvailable(Context context) {
+        // The bundled private 1.0 GDPS server answers entirely in-process over loopback,
+        // so online level browsing must keep working with Wi-Fi/mobile data switched off.
+        if (sLocalGdps) return true;
         if (context == null) return false;
         try {
             ConnectivityManager cm = (ConnectivityManager)

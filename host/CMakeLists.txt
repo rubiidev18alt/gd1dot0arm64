@@ -28,6 +28,8 @@ add_library(game SHARED
     src/jni_bridge.h
     src/loader.cpp
     src/loader.h
+    src/local_gdps.cpp
+    src/local_gdps.h
     src/mem.cpp
     src/natives.h
     src/paths.cpp
@@ -55,8 +57,9 @@ if(ANDROID)
     target_link_libraries(game PRIVATE dynarmic log android EGL GLESv2 z)
 else()
     find_package(JNI REQUIRED)
+    find_package(ZLIB REQUIRED)
     target_include_directories(game PRIVATE ${JNI_INCLUDE_DIRS})
-    target_link_libraries(game PRIVATE dynarmic EGL GLESv2 pthread dl m)
+    target_link_libraries(game PRIVATE dynarmic EGL GLESv2 ZLIB::ZLIB pthread dl m)
 
     option(GD102_BUILD_VERIFY_RUNNER "Build headless Linux ARM64 verification runner" ON)
     if(GD102_BUILD_VERIFY_RUNNER)

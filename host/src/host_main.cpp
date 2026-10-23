@@ -3,6 +3,7 @@
 #include "cpu.h"
 #include "jni_bridge.h"
 #include "loader.h"
+#include "local_gdps.h"
 #include "natives.h"
 #include "paths.h"
 #include "thunks_gl.h"
@@ -270,6 +271,23 @@ EXPORT_JNI void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativ
 #ifdef __ANDROID__
     AAssetManager *am = AAssetManager_fromJava(env, asset_manager);
     if (!am) fatal("AAssetManager_fromJava returned null");
+    if (AAsset *gdps_a = AAssetManager_open(am, "gdps/levels_1_0.bin", AASSET_MODE_BUFFER)) {
+        size_t gdps_len = (size_t)AAsset_getLength(gdps_a);
+        const void *gdps_buf = AAsset_getBuffer(gdps_a);
+        bool ok = false;
+        if (gdps_buf) {
+            ok = local_gdps::init_from_bytes((const u8 *)gdps_buf, gdps_len, data_dir);
+        } else {
+            std::vector<u8> copy(gdps_len);
+            if (AAsset_read(gdps_a, copy.data(), gdps_len) == (int)gdps_len) {
+                ok = local_gdps::init_from_bytes(copy.data(), copy.size(), data_dir);
+            }
+        }
+        AAsset_close(gdps_a);
+        if (!ok) fatal("failed to initialize embedded GD 1.0 local server");
+    } else if (pkg_name == "com.robtopx.geomgdps102") {
+        fatal("missing required asset gdps/levels_1_0.bin for com.robtopx.geomgdps102");
+    }
     g_rt_mod = load_asset_elf(am, "arm32/libguestrt.so", "libguestrt.so");
     g_game_mod = load_asset_elf(am, "arm32/libgame.so", "libgame.so");
     finish_guest_boot(env, data_dir);
@@ -282,6 +300,11 @@ EXPORT_JNI void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativ
     JNIEnv *, jclass) {
     gl::reset_context_state();
     g_surface_fresh.store(true, std::memory_order_release);
+}
+
+EXPORT_JNI jboolean JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeLocalGdpsEnabled(
+    JNIEnv *, jclass) {
+    return local_gdps::is_enabled() ? JNI_TRUE : JNI_FALSE;
 }
 
 // Host test/verification entry point for Linux ARM64 headless execution (`gd102_verify_runner`).
@@ -299,6 +322,7 @@ extern "C" __attribute__((visibility("default"))) bool gd102_host_boot_from_dir(
         }
         paths::add_mapping("/data/data/com.robtopx.geometryjump", data_dir);
         paths::add_mapping("/data/data/com.robtopx.geometryj102", data_dir);
+        paths::add_mapping("/data/data/com.robtopx.geomgdps102", data_dir);
         write_synthetic_cpuinfo32(data_dir);
 
         std::string dir = arm32_dir;
@@ -310,6 +334,77 @@ extern "C" __attribute__((visibility("default"))) bool gd102_host_boot_from_dir(
     }
     return loader::unresolved_symbols().empty();
 }
+
+#ifndef __ANDROID__
+extern "C" __attribute__((visibility("default"))) bool gd102_host_enable_local_gdps(
+    const char *db_path, const char *data_dir_c, u32 *out_levels, u16 *out_port) {
+    if (!db_path) return false;
+    std::string data_dir = data_dir_c ? data_dir_c : "/tmp/gd102_data";
+    if (!local_gdps::init_from_file(db_path, data_dir)) return false;
+    if (out_levels) *out_levels = local_gdps::level_count();
+    if (out_port) *out_port = local_gdps::port();
+    return true;
+}
+
+extern "C" __attribute__((visibility("default"))) void gd102_host_local_gdps_stats(
+    u32 *out_requests, u32 *out_blocked_uploads) {
+    if (out_requests) *out_requests = local_gdps::requests_handled();
+    if (out_blocked_uploads) *out_blocked_uploads = local_gdps::blocked_upload_count();
+}
+
+extern "C" __attribute__((visibility("default"))) u32 gd102_host_lookup_game_sym(const char *sym) {
+    if (!sym || !g_game_mod) return 0;
+    return loader::lookup(sym, g_game_mod);
+}
+
+// Finds the first exported libgame.so symbol whose (mangled) name contains `needle`.
+extern "C" __attribute__((visibility("default"))) u32 gd102_host_find_game_sym_containing(
+    const char *needle, char *out_name, u32 out_name_size) {
+    if (!needle || !g_game_mod) return 0;
+    const std::string n(needle);
+    for (const auto &kv : g_game_mod->exports) {
+        if (kv.first.find(n) == std::string::npos) continue;
+        if (out_name && out_name_size) {
+            snprintf(out_name, out_name_size, "%s", kv.first.c_str());
+        }
+        return kv.second;
+    }
+    if (out_name && out_name_size) out_name[0] = '\0';
+    return 0;
+}
+
+extern "C" __attribute__((visibility("default"))) u32 gd102_host_game_export_count() {
+    return g_game_mod ? (u32)g_game_mod->exports.size() : 0;
+}
+
+// Loads a tiny ARM32 shared object (tests/guest_gdps_probe.c) into the guest address space,
+// runs its static initializers, and invokes its exported `gdps_probe_run()` entry point so the
+// local GDPS server is exercised through real ARM32 guest code, real JNI/thunk boundaries, and
+// the same gethostbyname()/connect() path libgame.so uses for www.boomlings.com.
+extern "C" __attribute__((visibility("default"))) int gd102_host_run_guest_probe(
+    JNIEnv *env, const char *so_path) {
+    if (!so_path) return -1;
+    Module *probe = loader::load(so_path);
+    if (!probe) return -2;
+    loader::run_initializers(probe);
+    u32 fn = loader::lookup("gdps_probe_run", probe);
+    if (!fn) return -3;
+    jni::NativeFrame frame(env);
+    return (int)cpu::call32(fn, {});
+}
+
+extern "C" __attribute__((visibility("default"))) u32 gd102_host_call_guest(
+    JNIEnv *env, u32 fn_addr, u32 argc, const u32 *argv) {
+    if (!fn_addr) return 0;
+    jni::NativeFrame frame(env);
+    return (u32)cpu::call(fn_addr, argv, (size_t)argc);
+}
+
+extern "C" __attribute__((visibility("default"))) const char *gd102_host_guest_cstr(u32 guest_addr) {
+    if (!guest_addr) return nullptr;
+    return (const char *)g2h(guest_addr);
+}
+#endif
 
 // ------------------------------------------------------------------
 // 26 Geometry Dash 1.02 JNI exports forwarded into guest ARM32 libgame.so

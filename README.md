@@ -38,6 +38,7 @@ Instead of approximating game physics in a partial rewrite, this port executes t
 | **Native ARM64 GLES2, Bionic & Socket Thunks** | `host/src/thunks_*.cpp` | Zero-overhead ARM64 thunks for all 69 OpenGL ES 2.0 imports (client-array vs VBO pointer tracking + surface-recreation state reset), Bionic LP32 `stat`/`dirent`/`tm`/`timeb`/`addrinfo`/`__fpclassifyd`/`arc4random`/XSI `strerror_r`, `pthread`/semaphores, and full IPv4 + IPv6/NAT64 POSIX sockets & DNS. |
 | **ARM32 Guest Runtime + `zlib` 1.3.1** | `guest/` | Self-contained ARMv7 VFPv3-D16 `libguestrt.so` providing `setjmp`/`longjmp`, EABI runtime helpers, Bionic `_ctype_`/`__sF`, `dlmalloc`, `stb_sprintf` stdio, `getopt`, `memrchr`, and full `zlib` 1.3.1 (`inflate*`, `deflate*`, `gz*`, `crc32`, `uncompress`). |
 | **Android 16 Platform & Audio Shim** | `java/.../ModernPlatformHelper.java`, `java/.../ModernMusicController.java`, `scripts/patch_manifest_and_smali.py` | Targets API 36 (`minSdkVersion=24`, `targetSdkVersion=36`) with `WindowInsetsController` edge-to-edge sticky immersive fullscreen, `DISPLAY_CUTOUT_MODE_ALWAYS`, `setPreserveEGLContextOnPause(true)`, race-free `ModernMusicController` (`SEEK_CLOSEST` + `USAGE_GAME`, preserving exact paused decoder position on unpause), deterministic AES-128 atomic save persistence (`SimpleCrypto` replacement + multi-user data path virtualization), `ANDROID_ID`-based persistent UUID, `NetworkCapabilities`, `RECEIVER_EXPORTED`, and neutralized legacy Flurry/Chartboost SDKs. |
+| **Private Offline 1.0 GDPS (`com.robtopx.geomgdps102`)** | `host/src/local_gdps.{h,cpp}`, `scripts/build_gdhistory_db.py`, `tests/guest_gdps_probe.c` | Embeds every archived 1.0-era online level (IDs `128..1941`) from [GD History](https://history.geometrydash.eu) as a compact `GD10DB01` archive (`assets/gdps/levels_1_0.bin`), redirects `www.boomlings.com` DNS + TCP to an in-process read-only HTTP server on `127.0.0.1` (random loopback port), rewrites post-1.0 level strings back to native `kS1..kA1` format, and hard-blocks every `upload*`/`delete*` endpoint. |
 
 ---
 
@@ -88,6 +89,70 @@ python3 scripts/verify_apk.py dist/gd-1.02-arm64-com.robtopx.geometryj102.apk
 - Re-entrant JNI `Cocos2dxBitmap.createTextBitmap` -> `nativeInitBitmapDC` callbacks
 - Touch & hardware Back key (`KEYCODE_BACK`) navigation (`MenuLayer` -> `LevelSelectLayer` -> `PlayLayer`)
 - Deterministic AES-128 encrypted save persistence & reload decryption round-trip (`CCGameManager.dat` and `CCGameStore.dat`)
+
+---
+
+## Private Offline Geometry Dash 1.0 Level Server (`com.robtopx.geomgdps102`)
+
+The `v1.0.4` release adds a third, fully co-installable APK variant that ships its own
+**private, completely offline Geometry Dash 1.0 level server** inside the app:
+
+```text
+dist/gd-1.02-gdps-com.robtopx.geomgdps102.apk   (package com.robtopx.geomgdps102, label "gd 1.02 gdps arm64")
+```
+
+### What is inside
+
+* **All archived 1.0 levels.** `scripts/build_gdhistory_db.py` walks GD History's API for every
+  level ID in `128..1941`, and for each level picks its **earliest archived revision**
+  (a pure-1.0 level string whenever one was preserved). Levels with no preserved data are the only
+  ones skipped, so the archive is the complete playable 1.0 catalogue (~420 levels).
+* **Native 1.02 level format.** Revisions archived from later versions (1.9-2.2) are converted back to
+  `kS1..kS6,kA1` + `;id,x,y,...;` objects: 2.0 colour triggers targeting the BG/ground are mapped back to
+  the 1.0 `29`/`30` triggers, `kS29`/`kS30`/`kS38` colours are recovered, and objects that do not exist in
+  Geometry Dash 1.02's `ObjectToolbox` (verified against the real `GJ_GameSheet.plist` of
+  `Geometry.Dash.ver.1.02.build.4.apk`) are dropped.
+* **Deterministic binary archive.** `GD10DB01` (`assets/gdps/levels_1_0.bin`) stores one fixed 48-byte
+  header + names/description/creator + `zlib`-deflated level string per level; the ARM64 bridge memory-maps
+  it straight out of the APK (`AAsset_getBuffer`) and inflates a level string only when it is requested.
+* **Loopback HTTP server, no Wi-Fi required.** `gethostbyname("www.boomlings.com")` / `getaddrinfo` are answered
+  with the virtual address `127.0.0.77`, and `connect()` transparently rewrites that address to
+  `127.0.0.1:<random port>` where the in-process server lives. The unmodified original `libgame.so` therefore
+  searches, pages through and downloads real 1.0 levels entirely offline.
+* **Read-only by design.** `uploadGJLevel.php`, `uploadGJComment.php`, `uploadGJLevelList.php`,
+  `deleteGJLevelUser.php` and every other `upload*`/`delete*` endpoint always answer `-1` and are counted as
+  blocked. `likeGJLevel.php`, `rateGJLevel.php` and download counters are accepted but persisted only in the
+  app's private `files`/`data` directory (`gdps_local_state.txt`).
+
+### Supported endpoints (GD 1.0 wire format)
+
+`getGJLevels.php` (`type` 0-6, `str`, `diff`, `len`, `page`), `downloadGJLevel.php`, `updateGJLevel.php`,
+`likeGJLevel.php` / `likeGJItem.php`, `rateGJLevel.php`, `updateGJUserName.php`, `checkMoreGames.php`.
+
+### Building the archive + APK
+
+```bash
+# 1. Fetch every archived 1.0 level (needs internet once; results are cached in /tmp/gdhistory_cache)
+python3 scripts/build_gdhistory_db.py \
+    --out third_party/levels_1_0.bin \
+    --orig-apk third_party/Geometry.Dash.ver.1.02.build.4.apk \
+    --cache-dir /tmp/gdhistory_cache
+
+# 2. Build the offline-server variant
+GD102_PACKAGE_NAME=com.robtopx.geomgdps102 \
+GD102_APP_NAME="gd 1.02 gdps arm64" \
+GD102_LOCAL_GDPS=1 \
+GD102_GDPS_DB=third_party/levels_1_0.bin \
+  ./scripts/build_apk.sh
+
+# 3. Verify (checks package, 16 KB alignment, JNI exports, and the GD10DB01 archive integrity)
+python3 scripts/verify_apk.py dist/gd-1.02-gdps-com.robtopx.geomgdps102.apk --local-gdps 1
+```
+
+CI additionally proves the feature works end-to-end on real ARM64: it boots the GDPS APK, runs a real
+ARM32 guest probe (`tests/guest_gdps_probe.c`) that performs `gethostbyname("www.boomlings.com")` ->
+`socket()` -> `connect()` -> HTTP POST for search/download/upload-blocked/like/update, and then drives
+`libgame.so`'s own HTTP stack so an actual level download lands in the game's `LevelInfoLayer`.
 
 ---
 

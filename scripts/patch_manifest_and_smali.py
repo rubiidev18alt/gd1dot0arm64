@@ -31,13 +31,16 @@ def replace_method(text: str, method_header: str, new_body: str) -> str:
     return pattern.sub(lambda _: replacement, text, count=1)
 
 
-def patch_apktool_yml(apk_dir: pathlib.Path) -> None:
+def patch_apktool_yml(apk_dir: pathlib.Path, local_gdps: bool = False) -> None:
     yml_path = apk_dir / "apktool.yml"
     txt = yml_path.read_text(encoding="utf-8")
     txt = re.sub(r"minSdkVersion:\s*'?\d+'?", "minSdkVersion: '24'", txt)
     txt = re.sub(r"targetSdkVersion:\s*'?\d+'?", "targetSdkVersion: '36'", txt)
 
-    for entry in ("arm32/libguestrt.so", "arm32/libgame.so", "mp3", "ogg"):
+    entries = ["arm32/libguestrt.so", "arm32/libgame.so", "mp3", "ogg"]
+    if local_gdps:
+        entries.append("gdps/levels_1_0.bin")
+    for entry in entries:
         if entry not in txt:
             txt = txt.replace("doNotCompress:\n", f"doNotCompress:\n- {entry}\n", 1)
 
@@ -738,14 +741,22 @@ def main() -> None:
         default="gd 1.02 arm64",
         help="Target Android application label (default: 'gd 1.02 arm64')",
     )
+    parser.add_argument(
+        "--local-gdps",
+        default="0",
+        choices=("0", "1"),
+        help="Embed the private local 1.0 GDPS archive (assets/gdps/levels_1_0.bin) and route all "
+        "boomlings.com traffic to the in-process server (default: 0)",
+    )
     args = parser.parse_args()
+    local_gdps = args.local_gdps == "1"
 
     apk_dir = args.apk_dir.resolve()
     smali_root = apk_dir / "smali"
     if not smali_root.is_dir():
         raise RuntimeError(f"Decoded smali directory not found: {smali_root}")
 
-    patch_apktool_yml(apk_dir)
+    patch_apktool_yml(apk_dir, local_gdps=local_gdps)
     patch_manifest(apk_dir, args.package, args.app_name)
     patch_geometry_jump(smali_root)
     patch_base_robtop(smali_root)
@@ -754,8 +765,8 @@ def main() -> None:
     patch_cocos2dx_music(smali_root)
     patch_simple_crypto(smali_root)
     print(
-        f"Successfully patched manifest (package={args.package}, label='{args.app_name}'), "
-        f"apktool.yml, and smali in {apk_dir}"
+        f"Successfully patched manifest (package={args.package}, label='{args.app_name}', "
+        f"local_gdps={int(local_gdps)}), apktool.yml, and smali in {apk_dir}"
     )
 
 
