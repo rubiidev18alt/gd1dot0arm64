@@ -198,9 +198,11 @@ int probe_debug() {
     if (!dir) return bits;
     u32 scene = running_scene(dir);
     if (!scene) return bits;
+    bits |= 32;  // running scene located (field read + "7CCScene" RTTI check)
     u32 children = (u32)cpu::call32(g.get_children, {scene});
     if (!children) return bits;
     u32 n = (u32)cpu::call32(g.arr_count, {children});
+    if (n > 0) bits |= 64;  // scene has children to walk
     if (n > 16) n = 16;
     u32 lel = 0;
     for (u32 i = 0; i < n; i++) {
