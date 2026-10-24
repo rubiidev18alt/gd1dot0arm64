@@ -23,6 +23,8 @@ add_library(game SHARED
     src/common.h
     src/cpu.cpp
     src/cpu.h
+    src/editor_keys.cpp
+    src/editor_keys.h
     src/host_main.cpp
     src/jni_bridge.cpp
     src/jni_bridge.h

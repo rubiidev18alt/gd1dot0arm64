@@ -61,6 +61,30 @@ public final class ModernPlatformHelper {
     /** True when the private offline Geometry Dash 1.0 level server is baked into this APK. */
     public static native boolean nativeLocalGdpsEnabled();
 
+    // ---- Editor keybind bridge (GL thread only; see ModernEditorKeybinds) ----
+    /** True while the running scene is a LevelEditorLayer with a live EditorUI. */
+    public static native boolean nativeEditorProbe();
+
+    /** Diagnostic bits for the headless verify runner (see editor_keys.h). */
+    public static native int nativeEditorProbeDebug();
+
+    /** Zoom the editor view by discrete steps (>0 in, <0 out) via EditorUI::zoomIn/zoomOut. */
+    public static native void nativeEditorZoom(int steps);
+
+    /** Force the editor swipe state (presses the guest's swipe toggle when it differs). */
+    public static native void nativeEditorSwipe(boolean on);
+
+    /** Toggle swipe exactly like the on-screen swipe button. */
+    public static native void nativeEditorToggleSwipe();
+
+    /** Undo/redo recent editor actions (capped by the native side). */
+    public static native void nativeEditorUndo(int count);
+
+    public static native void nativeEditorRedo(int count);
+
+    /** Pan the editor view by (dx, dy) world units, clamped by the game's own constrain logic. */
+    public static native void nativeEditorPan(int dx, int dy);
+
     public static boolean isLocalGdpsEnabled() {
         return sLocalGdps;
     }
@@ -92,6 +116,7 @@ public final class ModernPlatformHelper {
         }
         applyImmersive(activity);
         ModernFpsCounter.install(activity);
+        ModernEditorKeybinds.install(activity);
     }
 
     /**
@@ -110,6 +135,7 @@ public final class ModernPlatformHelper {
             }
         }
         ModernFpsCounter.onFrame();
+        ModernEditorKeybinds.onFrameGlThread();
     }
 
     public static String resolveSavePath(String path) {

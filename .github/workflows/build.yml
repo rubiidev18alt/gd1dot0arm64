@@ -39,7 +39,7 @@ jobs:
     # keys off the produced files, so the two regular APK variants keep building,
     # verifying and publishing while this is off. Set the repository variable
     # ENABLE_GDPS_VARIANT=true to switch the private-server variant back on.
-    if: ${{ (github.event_name != 'workflow_dispatch' || inputs.inspect_only != true) && vars.ENABLE_GDPS_VARIANT == 'true' }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || inputs.inspect_only != true) && !contains(github.event.head_commit.message, '[inspect keybinds]') && vars.ENABLE_GDPS_VARIANT == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -127,7 +127,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build-level-archive
     # A skipped level-archive job must not skip the regular APK build.
-    if: ${{ !cancelled() && !failure() && (github.event_name != 'workflow_dispatch' || inputs.inspect_only != true) }}
+    if: ${{ !cancelled() && !failure() && (github.event_name != 'workflow_dispatch' || inputs.inspect_only != true) && !contains(github.event.head_commit.message, '[inspect keybinds]') }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
@@ -672,7 +672,7 @@ jobs:
   # facts needed to wire the editor keybinds (scripts/inspect_guest_keybinds.sh).
   inspect-guest-keybinds:
     name: Inspect guest keybind facts
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.inspect_only == true }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.inspect_only == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[inspect keybinds]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

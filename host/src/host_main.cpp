@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "common.h"
+#include "editor_keys.h"
 #include "cpu.h"
 #include "jni_bridge.h"
 #include "loader.h"
@@ -154,6 +155,7 @@ u32 finish_guest_boot(JNIEnv *env, const std::string &data_dir) {
     loader::run_initializers(g_rt_mod);
     u32 ctors = loader::run_initializers(g_game_mod);
     resolve_guest_exports();
+    editor_keys::init();
 
     if (u32 onload = loader::lookup("JNI_OnLoad", g_game_mod)) {
         jni::NativeFrame frame(env);

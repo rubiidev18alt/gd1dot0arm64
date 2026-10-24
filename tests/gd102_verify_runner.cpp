@@ -46,7 +46,15 @@ JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesBegin
 JNIEXPORT void JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesEnd(JNIEnv *, jclass, jint, jfloat, jfloat);
 JNIEXPORT jboolean JNICALL Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyDown(JNIEnv *, jclass, jint);
 JNIEXPORT void JNICALL Java_com_customRobTop_JniToCpp_resumeSound(JNIEnv *, jclass);
-}
+JNIEXPORT jboolean JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorProbe(JNIEnv *, jclass);
+JNIEXPORT jint JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorProbeDebug(JNIEnv *, jclass);
+JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorZoom(JNIEnv *, jclass, jint);
+JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorSwipe(JNIEnv *, jclass, jboolean);
+JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorToggleSwipe(JNIEnv *, jclass);
+JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorUndo(JNIEnv *, jclass, jint);
+JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorRedo(JNIEnv *, jclass, jint);
+JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorPan(JNIEnv *, jclass, jint, jint);
+
 
 #define CHECK(cond, ...)                                                       \
     do {                                                                       \
@@ -428,6 +436,15 @@ int main(int argc, char **argv) {
     CHECK(menu_stats.non_black > 200000, "MenuLayer framebuffer looks mostly blank (%zu non-black pixels)", menu_stats.non_black);
     CHECK(menu_stats.unique_buckets >= 32, "MenuLayer lacks expected color richness (%zu buckets)", menu_stats.unique_buckets);
 
+    // Editor keybind gate (1.1.2): symbol chain resolves, but nothing identifies a gameplay or
+    // editor layer while we are sitting on MenuLayer.
+    int kb_menu = Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorProbeDebug(env, nullptr);
+    printf("[VERIFY] Editor keybind probe (MenuLayer): debug=0x%x\n", kb_menu);
+    CHECK((kb_menu & 1) != 0, "Editor keybind symbol chain unresolved (debug=0x%x)", kb_menu);
+    CHECK((kb_menu & 6) == 0, "Editor keybind probe matched a Play/Editor layer on MenuLayer (0x%x)", kb_menu);
+    CHECK(!Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorProbe(env, nullptr),
+          "Editor probe returned true on MenuLayer");
+
     // Tap the center Play button (640, 360) -> LevelSelectLayer -> tap center (640, 360) -> Stereo Madness!
     auto tap = [&](float x, float y, int settle_frames) {
         Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesBegin(env, cls_renderer, 0, x, y);
@@ -457,6 +474,28 @@ int main(int argc, char **argv) {
            level_music.c_str(), play_stats.non_black, play_stats.unique_buckets, (unsigned long long)play_stats.fnv_hash);
     CHECK(play_stats.non_black > 200000, "PlayLayer framebuffer blank");
     CHECK(glGetError() == GL_NO_ERROR, "OpenGL ES error during gameplay");
+
+    // Editor keybind gate inside a real level: PlayLayer must be recognised through _ZTV9PlayLayer
+    // (proves the scene-walk + vptr scheme), the editor must NOT be, and every keybind action must
+    // no-op without crashing while the editor is closed.
+    int kb_play = Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorProbeDebug(env, nullptr);
+    printf("[VERIFY] Editor keybind probe (PlayLayer): debug=0x%x\n", kb_play);
+    CHECK((kb_play & 1) != 0, "Editor keybind symbol chain unresolved (debug=0x%x)", kb_play);
+    CHECK((kb_play & 2) != 0,
+          "PlayLayer vptr not recognised via _ZTV9PlayLayer (debug=0x%x) - vptr delta or cocos2d chain wrong",
+          kb_play);
+    CHECK((kb_play & 4) == 0, "LevelEditorLayer misidentified inside PlayLayer (0x%x)", kb_play);
+    CHECK(!Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorProbe(env, nullptr),
+          "Editor probe returned true inside PlayLayer");
+    Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorZoom(env, nullptr, 3);
+    Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorSwipe(env, nullptr, JNI_TRUE);
+    Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorSwipe(env, nullptr, JNI_FALSE);
+    Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorToggleSwipe(env, nullptr);
+    Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorUndo(env, nullptr, 2);
+    Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorRedo(env, nullptr, 2);
+    Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorPan(env, nullptr, 50, -50);
+    printf("[VERIFY] Editor keybind actions safely no-op outside the editor\n");
+    CHECK(glGetError() == GL_NO_ERROR, "GL error after editor keybind no-ops");
 
     // Verify variadic JNI `jfloat` (`double`-promoted) sound-effect parameters (`playEffect(String, boolean, float, float, float)`)!
     jfieldID fid_sfx_cnt   = env->GetStaticFieldID(cls_activity, "effectPlayCount", "I");
