@@ -108,11 +108,38 @@ bool rtti_name_is(u32 obj, const char *expect) {
     return false;
 }
 
+// Stage of the last running_scene() attempt, surfaced in probe_debug's high bits for the
+// verification runner: 0 never ran, 1 constants, 2 director, 3 scene field, 4 scene vptr,
+// 5 typeinfo, 6 name pointer, 7 name mismatch, 8 matched.
+u32 g_scene_stage = 0;
+
 // CCDirector::getRunningScene() is inline in cocos2d-x 2.0/2.1, so read the field directly.
+// Itanium type names keep namespaces ("N7cocos2d7CCSceneE"), while GD's own classes are global
+// ("16LevelEditorLayer") - accept both spellings for the scene.
 u32 running_scene(u32 dir) {
-    if (kRunningSceneOff <= 0 || !mapped(dir)) return 0;
+    if (kRunningSceneOff <= 0) { g_scene_stage = 1; return 0; }
+    if (!mapped(dir)) { g_scene_stage = 2; return 0; }
     u32 scene = rd<u32>(dir + (u32)kRunningSceneOff);
-    if (!rtti_name_is(scene, "7CCScene")) return 0;
+    if (!mapped(scene)) { g_scene_stage = 3; return 0; }
+    u32 vptr = rd<u32>(scene);
+    if (!mapped(vptr)) { g_scene_stage = 4; return 0; }
+    u32 ti = rd<u32>(vptr - 4);
+    if (!mapped(ti)) { g_scene_stage = 5; return 0; }
+    u32 namep = rd<u32>(ti + 4);
+    if (!mapped(namep)) { g_scene_stage = 6; return 0; }
+    char name[40];
+    u32 i = 0;
+    for (; i < sizeof(name) - 1; i++) {
+        u8 c = rd<u8>(namep + i);
+        if (!c) break;
+        name[i] = (char)c;
+    }
+    name[i] = 0;
+    if (strcmp(name, "N7cocos2d7CCSceneE") != 0 && strcmp(name, "7CCScene") != 0) {
+        g_scene_stage = 7;
+        return 0;
+    }
+    g_scene_stage = 8;
     return scene;
 }
 
@@ -202,8 +229,10 @@ int probe_debug() {
     u32 dir = (u32)cpu::call32(g.shared_director, {});
     if (!dir) return bits;
     u32 scene = running_scene(dir);
+    bits |= 32;  // director field read attempted; stage (bits 16..23) explains the outcome
+    bits |= (g_scene_stage & 0xFF) << 16;
     if (!scene) return bits;
-    bits |= 32;  // running scene located (field read + "7CCScene" RTTI check)
+    // running scene located (field read + namespaced RTTI check, stage 8)
     u32 children = (u32)cpu::call32(g.get_children, {scene});
     if (!children) return bits;
     u32 n = (u32)cpu::call32(g.arr_count, {children});

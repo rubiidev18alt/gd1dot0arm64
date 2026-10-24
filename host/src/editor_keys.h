@@ -18,7 +18,9 @@ void init();
 //   bit2 (4)  = running scene contains a LevelEditorLayer (vptr match)
 //   bit3 (8)  = the EditorUI was located for the live LevelEditorLayer
 //   bit4 (16) = that pointer's vptr matches EditorUI (layout constant verified)
-//   bit5 (32) = the running scene was resolved from CCDirector (field + RTTI)
+//   bit5 (32) = CCDirector was reachable and its running-scene field was read
 //   bit6 (64) = the running scene's child array is non-empty
+//   bits16..23 = running_scene stage (2 director, 3 field, 4 vptr, 5 typeinfo, 6 name ptr,
+//                7 name mismatch, 8 matched)
 int probe_debug();
 }  // namespace editor_keys
