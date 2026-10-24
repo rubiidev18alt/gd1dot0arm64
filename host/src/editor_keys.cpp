@@ -21,7 +21,7 @@
 namespace {
 constexpr u32 kVtblDelta = 8;
 constexpr int kSwipeFlagOff = 348;  // toggleSwipe: 0xae<<1, identical in 1.02 and 1.1
-constexpr int kUiFieldOff = -1;    // FACTS
+constexpr int kUiFieldOff = -1;    // optional fast path; -1 = find EditorUI among the LEL children
 
 struct Syms {
     u32 shared_director = 0;
@@ -61,8 +61,8 @@ void resolve() {
     g.arr_count        = find2("_ZNK7cocos2d7CCArray5countEv", "_ZN7cocos2d7CCArray5countEv");
     g.arr_at           = find1("_ZN7cocos2d7CCArray13objectAtIndexEj");
     g.pos              = find1("_ZN7cocos2d6CCNode11getPositionEv");
-    g.pos_x            = find1("_ZN7cocos2d6CCNode14getPositionXEv");
-    g.pos_y            = find1("_ZN7cocos2d6CCNode14getPositionYEv");
+    g.pos_x            = find1("_ZN7cocos2d6CCNode12getPositionXEv");
+    g.pos_y            = find1("_ZN7cocos2d6CCNode12getPositionYEv");
     g.set_pos          = find1("_ZN7cocos2d6CCNode11setPositionEff");
     g.ztv_lel          = find1("_ZTV16LevelEditorLayer");
     g.ztv_ui           = find1("_ZTV8EditorUI");
@@ -85,7 +85,28 @@ struct EditorCtx {
     u32 ui = 0;
 };
 
-bool constants_ok() { return kSwipeFlagOff >= 0 && kUiFieldOff >= 0; }
+bool constants_ok() { return kSwipeFlagOff >= 0; }
+
+// Locates the EditorUI for a live LevelEditorLayer. Primary method: walk the layer's children —
+// LevelEditorLayer::init does `addChild(EditorUI::create(this), 100)`, and every pointer picked up
+// along the way must carry the EditorUI vptr before it is trusted.
+u32 find_editor_ui(u32 lel) {
+    if (kUiFieldOff >= 0) {
+        u32 ui = rd<u32>(lel + (u32)kUiFieldOff);
+        if (ui && g.ztv_ui && rd<u32>(ui) == g.ztv_ui + kVtblDelta) return ui;
+    }
+    if (!g.ztv_ui || !g.get_children || !g.arr_count || !g.arr_at) return 0;
+    u32 children = (u32)cpu::call32(g.get_children, {lel});
+    if (!children) return 0;
+    u32 n = (u32)cpu::call32(g.arr_count, {children});
+    if (n > 32) n = 32;
+    for (u32 i = 0; i < n; i++) {
+        u32 ch = (u32)cpu::call32(g.arr_at, {children, i});
+        if (!ch) continue;
+        if (rd<u32>(ch) == g.ztv_ui + kVtblDelta) return ch;
+    }
+    return 0;
+}
 
 EditorCtx editor_ctx() {
     if (!g.resolved) resolve();
@@ -112,11 +133,7 @@ EditorCtx editor_ctx() {
         }
     }
     if (!ctx.lel) return ctx;
-    ctx.ui = rd<u32>(ctx.lel + (u32)kUiFieldOff);
-    // Defensive: a wrong field offset must degrade to "no editor", never to a wild pointer.
-    if (ctx.ui && g.ztv_ui && rd<u32>(ctx.ui) != g.ztv_ui + kVtblDelta) {
-        ctx.ui = 0;
-    }
+    ctx.ui = find_editor_ui(ctx.lel);
     return ctx;
 }
 
@@ -167,7 +184,7 @@ int probe_debug() {
         }
     }
     if (lel && constants_ok()) {
-        u32 ui = rd<u32>(lel + (u32)kUiFieldOff);
+        u32 ui = find_editor_ui(lel);
         if (ui) {
             bits |= 8;
             if (g.ztv_ui && rd<u32>(ui) == g.ztv_ui + kVtblDelta) bits |= 16;

@@ -16,7 +16,7 @@ void init();
 //   bit0 (1)  = all required guest symbols resolved and layout constants present
 //   bit1 (2)  = running scene contains a PlayLayer (vptr match)
 //   bit2 (4)  = running scene contains a LevelEditorLayer (vptr match)
-//   bit3 (8)  = LevelEditorLayer's EditorUI* field is non-null
+//   bit3 (8)  = the EditorUI was located for the live LevelEditorLayer
 //   bit4 (16) = that pointer's vptr matches EditorUI (layout constant verified)
 int probe_debug();
 }  // namespace editor_keys
