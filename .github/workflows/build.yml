@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      inspect_only:
+        description: "Run only the guest keybind facts inspection (no build/verify/publish)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -34,7 +39,7 @@ jobs:
     # keys off the produced files, so the two regular APK variants keep building,
     # verifying and publishing while this is off. Set the repository variable
     # ENABLE_GDPS_VARIANT=true to switch the private-server variant back on.
-    if: ${{ vars.ENABLE_GDPS_VARIANT == 'true' }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || inputs.inspect_only != true) && vars.ENABLE_GDPS_VARIANT == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -122,7 +127,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build-level-archive
     # A skipped level-archive job must not skip the regular APK build.
-    if: ${{ !cancelled() && !failure() }}
+    if: ${{ !cancelled() && !failure() && (github.event_name != 'workflow_dispatch' || inputs.inspect_only != true) }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
@@ -539,6 +544,7 @@ jobs:
       !cancelled() && !failure() &&
       needs.build-apk.result == 'success' &&
       needs.verify-arm64-runtime.result == 'success' &&
+      !contains(github.event.head_commit.message, '[skip publish]') &&
       (github.ref == 'refs/heads/master' ||
       startsWith(github.ref, 'refs/heads/arena/') ||
       startsWith(github.ref, 'refs/tags/v') ||
@@ -660,3 +666,50 @@ jobs:
           txt = tail.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
           print(f"::error title=publish_release tail::{txt}")
           PYEOF
+
+  # On-demand reverse-engineering pass (dispatch with inspect_only=true): downloads the original
+  # GD 1.02 / 1.1 APKs, extracts the ARM32 guest libgame.so, and commits the symbol/disassembly
+  # facts needed to wire the editor keybinds (scripts/inspect_guest_keybinds.sh).
+  inspect-guest-keybinds:
+    name: Inspect guest keybind facts
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.inspect_only == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ARM binutils
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils-arm-linux-gnueabi
+
+      - name: Fetch original APKs (1.02 and 1.1)
+        run: |
+          ./scripts/fetch_deps.sh --with-apk
+          ./scripts/fetch_deps.sh --with-apk11
+
+      - name: Dump keybind facts
+        run: ./scripts/inspect_guest_keybinds.sh
+
+      - name: Surface highlights
+        run: |
+          {
+            echo "### guest keybind facts highlights"
+            grep -E "^(### guest|so_size|export_count)" tools/analysis/guest_keybind_facts.txt || true
+            grep -E "sharedDirector|getRunningScene|_ZTV16LevelEditorLayer|_ZTV8EditorUI|toggleSwipe|zoomIn|getChildren|objectAtIndex" \
+              tools/analysis/guest_keybind_facts.txt | head -40 || true
+          } | sed 's|^|::notice title=keybind facts::|' | head -50
+
+      - name: Commit facts (skip CI)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f tools/analysis/guest_keybind_facts.txt
+          if git diff --cached --quiet; then
+            echo "facts unchanged"
+          else
+            git commit -m "analysis: guest keybind symbols & disassembly [skip ci]"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "$GITHUB_REF_NAME"
+          fi
