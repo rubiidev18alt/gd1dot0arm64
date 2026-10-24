@@ -81,10 +81,13 @@ void resolve() {
                                "_ZN8EditorUI25constrainGameLayerPositionEv");
 }
 
-// Every pointer read out of guest memory must be a mapped guest address before we dereference
-// it: loader::find_by_addr is what makes a wrong layout constant degrade to "feature off"
-// instead of taking the host process down.
-bool mapped(u32 p) { return p && loader::find_by_addr(p) != nullptr; }
+// Safe-to-dereference guest address: mem::init() maps the whole span
+// GUEST_THUNK_BASE..4 GiB read/write (only the first 64 KiB is PROT_NONE), so anything at or
+// above GUEST_THUNK_BASE can be read without faulting - including heap objects, which are NOT
+// inside any loaded module and would be rejected by a module-range check. Reads of untouched
+// pages come back zero and fail the RTTI checks below gracefully, which is what makes a wrong
+// layout constant degrade to "feature off" instead of taking the host process down.
+bool mapped(u32 p) { return p >= GUEST_THUNK_BASE; }
 
 // Itanium RTTI: an object's vptr[-1] is its std::type_info*, whose [4] is the name pointer
 // ("7CCScene", "16LevelEditorLayer", ...). RTTI is enabled in both guests (the _ZTI symbols
