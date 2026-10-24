@@ -94,9 +94,13 @@ ZLIB_SRCS=(
     "$ZLIB_DIR/zutil.c"
 )
 
+# NOTE: -D_FILE_OFFSET_BITS is chosen per toolchain below. Android/NDK builds keep the historical
+# 32-bit off_t; the Debian arm-linux-gnueabi fallback must opt into the toolchain's paired
+# 64-bit time model (_FILE_OFFSET_BITS=64 + _TIME_BITS=64) or newer cross-gcc releases abort with
+# "_TIME_BITS=64 is allowed only with _FILE_OFFSET_BITS=64".
 COMMON_DEFS=(
     -O2 -marm -fPIC -ffreestanding -fno-builtin -fno-stack-protector
-    -fvisibility=hidden -D_FILE_OFFSET_BITS=32
+    -fvisibility=hidden
     -DHAVE_UNISTD_H=1 -DHAVE_STDARG_H=1
     '-DZEXTERN=extern __attribute__((visibility("default")))'
 )
@@ -107,7 +111,7 @@ if [ -n "${NDK:-}" ] && [ -d "${NDK:-}" ]; then
     RT_ARCHIVE="$("$CC" -rtlib=compiler-rt -print-libgcc-file-name)"
     BUILTINS="$TMP_BUILD/libbuiltins-export.a"
     promote_archive_visibility "$RT_ARCHIVE" "$BUILTINS"
-    "$CC" "${COMMON_DEFS[@]}" -mfloat-abi=softfp -mfpu=vfpv3-d16 -Wno-everything \
+    "$CC" "${COMMON_DEFS[@]}" -D_FILE_OFFSET_BITS=32 -mfloat-abi=softfp -mfpu=vfpv3-d16 -Wno-everything \
         -shared -nostdlib -Wl,-soname,libguestrt.so -Wl,-Bsymbolic -Wl,--no-undefined-version \
         -Wl,--hash-style=both -Wl,-z,norelro \
         "$HERE/rt_string.c" "$HERE/rt_stdio.c" "$HERE/rt_malloc.c" "$HERE/rt_asm.S" \
@@ -118,7 +122,8 @@ elif command -v arm-linux-gnueabi-gcc >/dev/null 2>&1; then
     LIBGCC="$(arm-linux-gnueabi-gcc -march=armv7-a -marm -mfloat-abi=soft -print-libgcc-file-name)"
     BUILTINS="$TMP_BUILD/libgcc-export.a"
     promote_archive_visibility "$LIBGCC" "$BUILTINS"
-    arm-linux-gnueabi-gcc "${COMMON_DEFS[@]}" -march=armv7-a -mfloat-abi=soft -w \
+    arm-linux-gnueabi-gcc "${COMMON_DEFS[@]}" -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64 \
+        -march=armv7-a -mfloat-abi=soft -w \
         -shared -nostdlib -Wl,-soname,libguestrt.so -Wl,-Bsymbolic \
         -Wl,--hash-style=both -Wl,-z,norelro \
         "$HERE/rt_string.c" "$HERE/rt_stdio.c" "$HERE/rt_malloc.c" "$HERE/rt_asm.S" \
