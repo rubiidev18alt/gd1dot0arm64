@@ -64,17 +64,6 @@ dump_one() { # $1=label $2=apk
     echo "-- scene-graph / vtable / editor symbols (value + type) --"
     grep -E "(_ZN7cocos2d10CCDirector1[45](sharedDirector|getRunningScene)Ev|_ZN7cocos2d6CCNode11getChildrenEv|_ZNK?7cocos2d7CCArray(5count|13objectAtIndex)E?v?|_ZN7cocos2d6CCNode1[45]getPosition[XY]Ev|_ZN7cocos2d6CCNode11setPositionEff|_ZTV(16LevelEditorLayer|8EditorUI|9PlayLayer|7CCScene)|_ZTI(S|16LevelEditorLayer|8EditorUI)|_ZTS(16LevelEditorLayer|8EditorUI)|toggleSwipe|zoomIn|zoomOut|undoLastAction|redoLastAction|getGameLayer|constrainGameLayerPosition|copyObject|pasteObject)" "$dir/dyn.txt" || true
 
-    echo "::notice title=inspect stage::$label symbols grepped"
-    echo "-- CCDirector symbols (scene access is inline; drawScene/mainLoop reveal field offsets) --"
-    grep -E "_ZN7cocos2d10CCDirector[0-9]+" "$dir/dyn.txt" | head -60 || true
-
-    echo "-- CCDirector::drawScene / mainLoop / getWinSize disasm (m_pRunningScene / m_obWinSizeInPoints offsets) --"
-    for sym in _ZN7cocos2d10CCDirector8drawSceneEv _ZN7cocos2d10CCDirector8mainLoopEv _ZN7cocos2d10CCDirector10getWinSizeEv _ZN7cocos2d10CCDirector17calculateDeltaTimeEv; do
-        out="" || out=""
-        out="$(disasm_fn "$dir/dis.txt" "$sym" | awk 'NR <= 70 { print }')" || out=""
-        if [ -n "$out" ]; then echo "symbol: $sym"; echo "$out"; fi
-    done
-
     echo "-- CCNode position accessors (needed for arrow-key pan) --"
     grep -E "_ZNK?7cocos2d6CCNode[0-9]+getPosition" "$dir/dyn.txt" || true
 
@@ -90,6 +79,18 @@ dump_one() { # $1=label $2=apk
     # Full disassembly for context greps (kept in temp only).
     echo "::notice title=inspect stage::disassembling $label"
     "$OBJDUMP" -d "$so" > "$dir/dis.txt"
+
+    echo "::notice title=inspect stage::$label symbols grepped"
+    echo "-- CCDirector symbols (scene access is inline; drawScene/mainLoop reveal field offsets) --"
+    grep -E "_ZN7cocos2d10CCDirector[0-9]+" "$dir/dyn.txt" | head -60 || true
+
+    echo "-- CCDirector::drawScene / mainLoop / getWinSize disasm (m_pRunningScene / m_obWinSizeInPoints offsets) --"
+    for sym in _ZN7cocos2d10CCDirector9drawSceneEv _ZN7cocos2d10CCDirector8mainLoopEv _ZN7cocos2d10CCDirector10getWinSizeEv _ZN7cocos2d10CCDirector17calculateDeltaTimeEv; do
+        out="" || out=""
+        out="$(disasm_fn "$dir/dis.txt" "$sym" | awk 'NR <= 70 { print }')" || out=""
+        if [ -n "$out" ]; then echo "symbol: $sym"; echo "$out"; fi
+    done
+
 
     echo "-- EditorUI::toggleSwipe (full disassembly; strb/ldrb [rX,#imm] reveals the flag offset) --"
     for sym in _ZN8EditorUI11toggleSwipeEv _ZN8EditorUI12toggleSwipeEv; do
