@@ -11,7 +11,7 @@ import android.view.SearchEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.AccessibilityEvent;
+import android.view.accessibility.AccessibilityEvent;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * during gameplay or in menus. While a text input has focus (level name), or when the window
  * loses focus, all events pass through untouched.
  */
-public final class ModernEditorKeybinds {
+public final class ModernEditorKeybinds implements Window.Callback {
     private static final String TAG = "gd102-keybinds";
     /** Pan distance per arrow-key step, in editor world units (tunable). */
     private static final int PAN_STEP = 50;
@@ -358,6 +358,11 @@ public final class ModernEditorKeybinds {
         return mDelegate.onSearchRequested(event);
     }
 
+    public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback,
+            int featureId) {
+        return mDelegate.onWindowStartingActionMode(callback, featureId);
+    }
+
     public boolean onCapturedPointerEvent(MotionEvent event) {
         return mDelegate.onCapturedPointerEvent(event);
     }
@@ -386,6 +391,8 @@ public final class ModernEditorKeybinds {
         public void onPanelClosed(int featureId, Menu menu) { }
         public boolean onSearchRequested() { return false; }
         public boolean onSearchRequested(SearchEvent event) { return false; }
+        public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback,
+                int featureId) { return false; }
         public boolean onCapturedPointerEvent(MotionEvent event) { return false; }
         public void onPointerCaptureChanged(boolean hasCapture) { }
     }
