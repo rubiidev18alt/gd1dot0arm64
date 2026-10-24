@@ -19,8 +19,8 @@
 // the build rather than corrupting the guest.
 // ---------------------------------------------------------------------------
 namespace {
-constexpr u32 kVtblDelta = 16;
-constexpr int kSwipeFlagOff = -1;  // FACTS
+constexpr u32 kVtblDelta = 8;
+constexpr int kSwipeFlagOff = 348;  // toggleSwipe: 0xae<<1, identical in 1.02 and 1.1
 constexpr int kUiFieldOff = -1;    // FACTS
 
 struct Syms {
@@ -67,13 +67,15 @@ void resolve() {
     g.ztv_lel          = find1("_ZTV16LevelEditorLayer");
     g.ztv_ui           = find1("_ZTV8EditorUI");
     g.ztv_play         = find1("_ZTV9PlayLayer");
-    g.get_game_layer   = find2("_ZN16LevelEditorLayer12getGameLayerEv",
-                               "_ZN16LevelEditorLayer13getGameLayerEv");
+    g.get_game_layer   = find2("_ZNK16LevelEditorLayer12getGameLayerEv",
+                               "_ZN16LevelEditorLayer12getGameLayerEv");
     g.toggle_swipe     = find2("_ZN8EditorUI11toggleSwipeEv", "_ZN8EditorUI12toggleSwipeEv");
     g.zoom_in          = find1("_ZN8EditorUI6zoomInEv");
     g.zoom_out         = find1("_ZN8EditorUI7zoomOutEv");
-    g.undo             = find2("_ZN8EditorUI12undoLastActionEv", "_ZN8EditorUI11undoLastActionEv");
-    g.redo             = find2("_ZN8EditorUI12redoLastActionEv", "_ZN8EditorUI11redoLastActionEv");
+    g.undo             = find2("_ZN8EditorUI14undoLastActionEv",
+                               "_ZN16LevelEditorLayer14undoLastActionEv");
+    g.redo             = find2("_ZN8EditorUI14redoLastActionEv",
+                               "_ZN16LevelEditorLayer14redoLastActionEv");
     g.constrain        = find2("_ZN8EditorUI26constrainGameLayerPositionEv",
                                "_ZN8EditorUI25constrainGameLayerPositionEv");
 }

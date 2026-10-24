@@ -102,7 +102,14 @@ public final class ModernEditorKeybinds {
     public static void onFrameGlThread() {
         if (sBroken) return;
         try {
+            boolean was = sInEditor;
             sInEditor = ModernPlatformHelper.nativeEditorProbe();
+            if (sInEditor && !was) {
+                // Entering the editor: pin swipe to the official default (off). The native side
+                // only presses the guest's toggle when the flag actually differs, so a correctly
+                // initialised guest makes this a no-op.
+                ModernPlatformHelper.nativeEditorSwipe(false);
+            }
             if (!sInEditor) {
                 // Drop stale intents from a scene we have already left (except a pending swipe
                 // restore, which the bridge itself gates by re-probing).
