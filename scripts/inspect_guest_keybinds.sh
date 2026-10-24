@@ -60,7 +60,7 @@ dump_one() { # $1=label $2=apk
     grep -E "(_ZN7cocos2d10CCDirector1[45](sharedDirector|getRunningScene)Ev|_ZN7cocos2d6CCNode11getChildrenEv|_ZNK?7cocos2d7CCArray(5count|13objectAtIndex)E?v?|_ZN7cocos2d6CCNode1[45]getPosition[XY]Ev|_ZN7cocos2d6CCNode11setPositionEff|_ZTV(16LevelEditorLayer|8EditorUI|9PlayLayer|7CCScene)|_ZTI(S|16LevelEditorLayer|8EditorUI)|_ZTS(16LevelEditorLayer|8EditorUI)|toggleSwipe|zoomIn|zoomOut|undoLastAction|redoLastAction|getGameLayer|constrainGameLayerPosition|copyObject|pasteObject)" "$dir/dyn.txt" || true
 
     echo "-- CCNode position accessors (needed for arrow-key pan) --"
-    grep -E "_ZN7cocos2d6CCNode(11getPositionEv|14getPositionXEv|14getPositionYEv|11setPositionEff|19convertToWorldSpaceEN7cocos2d7CCPointE)([ ]|$)" "$dir/dyn.txt" || true
+    grep -E "_ZNK?7cocos2d6CCNode[0-9]+getPosition" "$dir/dyn.txt" || true
 
     echo "-- all EditorUI / LevelEditorLayer dynamic symbols --"
     grep -E "_ZN(8EditorUI|16LevelEditorLayer)" "$dir/dyn.txt" || true
