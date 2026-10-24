@@ -21,7 +21,9 @@
 namespace {
 constexpr u32 kVtblDelta = 8;
 constexpr int kSwipeFlagOff = 348;  // toggleSwipe: 0xae<<1, identical in 1.02 and 1.1
-constexpr int kRunningSceneOff = 80;  // CCDirector::m_pRunningScene (inline getter - no symbol)
+// CCDirector::m_pRunningScene: ground-truthed from drawScene's `ldr r0,[r4,#112]` +
+// virtual visit() in the real guest (the 2.0.4/2.1 header math alone would have been 32 off).
+constexpr int kRunningSceneOff = 112;
 constexpr int kUiFieldOff = -1;    // optional fast path; -1 = find EditorUI among the LEL children
 
 struct Syms {
