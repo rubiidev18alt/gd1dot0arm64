@@ -70,7 +70,8 @@ dump_one() { # $1=label $2=apk
 
     echo "-- CCDirector::drawScene / mainLoop / getWinSize disasm (m_pRunningScene / m_obWinSizeInPoints offsets) --"
     for sym in _ZN7cocos2d10CCDirector8drawSceneEv _ZN7cocos2d10CCDirector8mainLoopEv _ZN7cocos2d10CCDirector10getWinSizeEv _ZN7cocos2d10CCDirector17calculateDeltaTimeEv; do
-        out="$(disasm_fn "$dir/dis.txt" "$sym" | head -70)"
+        out="" || out=""
+        out="$(disasm_fn "$dir/dis.txt" "$sym" | awk 'NR <= 70 { print }')" || out=""
         if [ -n "$out" ]; then echo "symbol: $sym"; echo "$out"; fi
     done
 
@@ -151,6 +152,7 @@ PYEOF
     echo
     dump_one "gd102" "$APK102"
     dump_one "gd11" "$APK11"
-} | tee "$OUT"
+} > "$OUT"
 
-echo "==> wrote $OUT"
+echo "==> wrote $OUT ($(stat -c%s "$OUT") bytes)"
+cat "$OUT"
