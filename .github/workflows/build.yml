@@ -562,7 +562,7 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee -a /tmp/publish_release.log) 2>&1
-          TAG="v1.1.1"
+          TAG="v1.1.2"
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
@@ -589,7 +589,7 @@ jobs:
           fi
 
           # Refresh earlier release tags in-place so any bookmarked links serve the fully fixed APKs.
-          for OLD_TAG in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4; do
+          for OLD_TAG in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4 v1.1.0 v1.1.1; do
             if gh release view "$OLD_TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
               gh release upload "$OLD_TAG" \
                 "dist/${APK_NAME}" \
@@ -601,37 +601,41 @@ jobs:
           done
 
           NOTES=$(cat <<EOF
-          ## gd 1.02 / gd 1.1 arm64 — v1.1.1 (FPS counter + runner optimizations)
+          ## gd 1.02 / gd 1.1 arm64 — v1.1.2 (PC editor keybinds + FPS counter fix)
 
-          ### What's New in v1.1.1
-          - **FPS counter, top-left.** Small (11sp), one decimal place, in a plain Android **sans-serif** face — deliberately *not* the game's Pusab bitmap font. It counts frames where the engine actually draws them (\`Cocos2dxRenderer.onDrawFrame\` -> \`ModernPlatformHelper.onFrameRendered()\`) and averages a 500 ms window twice a second, so it reports real rendered frames rather than vsync callbacks or the panel's refresh rate. It is an ordinary TextView layered above the GL surface, inset past the display cutout in immersive mode, and costs the game one composited layer that only repaints twice per second. Present in all three APKs.
-          - **Slight runner & game optimizations for Android emulators and low-end devices.**
-            - Redundant GL state calls are elided: consecutive \`glBindTexture\` / \`glBindBuffer\` calls that rebind the object already bound on that texture unit and target are skipped before they reach the GLES driver. cocos2d-x 2.0 re-binds per quad, and emulator GL stacks and low-end mobile GPUs pay for every driver entry point.
-            - The render thread now runs at \`THREAD_PRIORITY_DISPLAY\` instead of the default priority, so a loaded emulator or low-end device schedules frames ahead of background work.
-            - No gameplay, physics, save, audio or content changes: the 1.02 and 1.1 guest binaries are byte-identical to v1.1.0 and the whole headless ARM64 verification suite still passes.
+          ### Changelog
+          - **added: keybinds for pc for the editor** (shift to enable swipe, scrollwheel for zooming in and out, and other keybinds)
+            - **Hold Shift** — swipe is active while Shift is held, exactly like the desktop client; release to restore the swipe button's state.
+            - **Scroll wheel** — zoom in/out through the editor's own discrete zoom steps (mouse wheel up = zoom in).
+            - **T** — toggle swipe (persistent, same as the on-screen swipe button).
+            - **+ / -** (main row or numpad) — zoom in/out.
+            - **Ctrl+Z** — undo; **Ctrl+Shift+Z** or **Ctrl+Y** — redo.
+            - **Arrow keys** — pan the editor view (the viewport follows the arrow).
+            - Implemented by wrapping the Android window callback and, between rendered frames on the GL thread, driving the guest binary's own \\`EditorUI\\` entry points (\\`zoomIn\\`/\\`zoomOut\\`, \\`toggleSwipe\\`, undo/redo, game-layer pan) — no screen-coordinate taps, no guest code patched. Keybinds only act while the running scene really is the level editor (identified through the guest's own vtables); in menus, during gameplay, and while a text input has focus, every key passes through untouched. Present in all three APKs.
+          - **fixed: fps counter not showing up** — the v1.1.1 overlay could attach to the window before the window finished creating and silently disappear. The overlay now attaches itself from a self-healing 500 ms ticker once the window exists, re-attaches if it is ever removed or the activity is recreated, logs each attempt under the \\`gd102-fps\\` logcat tag, and warns distinctly if the frame-counting hook stops firing.
 
           ### APK Variants Included
-          1. **\`${GD11_APK}\`** — **Geometry Dash 1.1** (\`package="com.robtopx.geometryj11"\`, app name **\`gd 1.1 arm64\`**). Co-installable; Time Machine, both mirror portals, 1.1 achievements and icons.
-          2. **\`${APK_NAME}\`** — **GD 1.02, co-installable** (\`package="com.robtopx.geometryj102"\`, app name **\`gd 1.02 arm64\`**), official online servers.
-          3. **\`${ORIG_PKG_APK}\`** — **GD 1.02, original package id** (\`package="com.robtopx.geometryjump"\`, app name **\`Geometry Dash\`**), official online servers.
+          1. **\\`${GD11_APK}\\`** — **Geometry Dash 1.1** (\\`package="com.robtopx.geometryj11"\\`, app name **\\`gd 1.1 arm64\\`**). Co-installable; Time Machine, both mirror portals, 1.1 achievements and icons.
+          2. **\\`${APK_NAME}\\`** — **GD 1.02, co-installable** (\\`package="com.robtopx.geometryj102"\\`, app name **\\`gd 1.02 arm64\\`**), official online servers.
+          3. **\\`${ORIG_PKG_APK}\\`** — **GD 1.02, original package id** (\\`package="com.robtopx.geometryjump"\\`, app name **\\`Geometry Dash\\`**), official online servers.
 
-          ### Still included from v1.1.0
-          - **Time Machine** with its soundtrack, achievements and its icon/colour unlocks, plus **both mirror portals** (blue and orange) in-game and placeable in the editor — shipped by running the real, unmodified Geometry Dash 1.1 (build 5) \`libgame.so\` through the ARM64 bridge.
-          - **Large-screen text layout fix** (\`ModernTextLayout\`): float-accurate measurement, word wrapping, ellipsis and clamping to the real \`GL_MAX_TEXTURE_SIZE\` instead of labels silently disappearing.
-          - Every earlier 1.02 fix: music unpause position, SFX pitch/speed, Android 16 / 16 KB page hardening.
+          ### Carried over from v1.1.x
+          - **GD 1.1 content**: Time Machine with its soundtrack, achievements and icon/colour unlocks, plus both mirror portals (blue and orange) in-game and in the editor, running the unmodified Geometry Dash 1.1 (build 5) \\`libgame.so\\` through the ARM64 bridge.
+          - **FPS counter** (top-left, 1 decimal, small plain sans-serif, not Pusab) and the v1.1.1 runner/game optimizations (redundant GL binds elided, render thread at \\`THREAD_PRIORITY_DISPLAY\\`).
+          - **Large-screen text layout fix** (\\`ModernTextLayout\\`), music-unpause position, SFX pitch/speed, Android 16 / 16 KB page hardening.
 
           ### Notes
-          - The 1.9 PC UHD (4x) texture back-port is **not** in this release: those assets are PC-only and were not available to the build, and 1.02 already ships the 2x \`-hd\` set.
-          - The private offline level server variant (\`com.robtopx.geomgdps102\`) remains disabled while the GD History archive job cannot get through Cloudflare.
-          - The v1.1.1 changelog's "changed:" section had no entries, so nothing else was altered.
+          - The 1.9 PC UHD (4x) texture back-port is **not** included: those assets are PC-only and were not available to the build, and 1.02 already ships the 2x \\`-hd\\` set.
+          - The private offline level server variant (\\`com.robtopx.geomgdps102\\`) remains disabled while the GD History archive job cannot get through Cloudflare.
+          - The changelog's "changed:" list was left empty, so nothing beyond the added keybinds and the FPS counter fix was altered; guest binaries are byte-identical to v1.1.1 and the full headless verification suite (226/229 constructors, menu hash, SFX, unpause seek, saves, editor-keybind gate probes) passes.
 
           ### SHA-256 Checksums
-          \`\`\`text
+          \\`\\`\\`text
           ${SHA_11}
           ${SHA_COINSTALL}
           ${SHA_ORIG}
           ${SHA_GDPS}
-          \`\`\`
+          \\`\\`\\`
           EOF
           )
 
@@ -639,12 +643,12 @@ jobs:
             gh release upload "$TAG" "${ASSETS[@]}" \
               --clobber --repo "${GITHUB_REPOSITORY}"
             gh release edit "$TAG" \
-              --title "gd 1.02 / 1.1 arm64 — v1.1.1 (FPS counter + runner optimizations)" \
+              --title "gd 1.02 / 1.1 arm64 — v1.1.2 (PC editor keybinds + FPS counter fix)" \
               --notes "$NOTES" \
               --repo "${GITHUB_REPOSITORY}"
           else
             gh release create "$TAG" "${ASSETS[@]}" \
-              --title "gd 1.02 / 1.1 arm64 — v1.1.1 (FPS counter + runner optimizations)" \
+              --title "gd 1.02 / 1.1 arm64 — v1.1.2 (PC editor keybinds + FPS counter fix)" \
               --notes "$NOTES" \
               --target "${GITHUB_SHA}" \
               --repo "${GITHUB_REPOSITORY}"

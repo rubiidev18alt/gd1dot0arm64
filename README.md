@@ -2,7 +2,7 @@
 
 A complete, 100%-accurate native **ARM64 (`arm64-v8a`)** port of **Geometry Dash 1.02 (build 4)** packaged as **`com.robtopx.geometryj102`** (**`gd 1.02 arm64`**) so it installs side-by-side alongside regular Geometry Dash (`com.robtopx.geometryjump`) with isolated save data — built for modern 64-bit-only Android devices including **Android 16 (API 36)**, **ARMv9 CPUs with hardware AArch32 execution removed** (Google Pixel 7 / 8 / 9 / 10, Snapdragon 8 Gen 3 / 8 Elite, Tensor G3–G5), and **16 KB kernel page sizes**.
 
-**v1.1.0** adds a second, fully co-installable port: **Geometry Dash 1.1 (build 5)** as **`com.robtopx.geometryj11`** (**`gd 1.1 arm64`**) — the update that introduced **Time Machine** and **mirror portals** — plus a large-screen text layout fix that applies to every variant. **v1.1.1** adds a small top-left **FPS counter** and a few runner/game optimizations aimed at emulators and low-end devices.
+**v1.1.0** adds a second, fully co-installable port: **Geometry Dash 1.1 (build 5)** as **`com.robtopx.geometryj11`** (**`gd 1.1 arm64`**) — the update that introduced **Time Machine** and **mirror portals** — plus a large-screen text layout fix that applies to every variant. **v1.1.1** adds a small top-left **FPS counter** and a few runner/game optimizations aimed at emulators and low-end devices. **v1.1.2** adds **PC editor keybinds** (Shift = swipe, wheel = zoom, T, Ctrl+Z, arrows) and fixes the FPS counter overlay not showing up.
 
 [![Download Latest APK Release](https://img.shields.io/github/v/release/rubiidev18alt/gd1dot0arm64?label=Download%20ARM64%20APK&style=for-the-badge)](https://github.com/rubiidev18alt/gd1dot0arm64/releases/latest)
 
@@ -144,6 +144,54 @@ the guest engine.
   rendered frames ahead of background work instead of at the default priority.
 * Nothing else changed: the guest binaries, game logic, physics, saves and audio are untouched, and
   the full headless ARM64 suite still passes.
+
+---
+
+## PC Editor Keybinds & FPS Counter Fix (v1.1.2)
+
+**Fixed: the FPS counter not showing up.** In v1.1.1 the overlay was attached from `initBridge`,
+which runs *before* `super.onCreate()` — if that attach raced the window creation it failed once and
+never retried, leaving no trace. The counter now installs a self-healing 500 ms ticker on the main
+looper: the first tick attaches the label directly to the window's decor view (above the GL surface,
+immune to later `setContentView` calls), every later tick re-attaches it if it ever loses its parent
+or the activity is recreated, each attempt is logged under the `gd102-fps` logcat tag, and a distinct
+warning fires if the `onDrawFrame` frame-counting hook ever stops delivering frames.
+
+**Added: PC editor keybinds**, matching the desktop client, for any setup with a keyboard
+(Android emulators on Windows/Linux/macOS, Chromebooks, desktop-mode devices):
+
+| Key | Action |
+| --- | --- |
+| **Shift (hold)** | Swipe active while held (same as holding Shift on Steam GD); release restores the swipe button's state |
+| **Scroll wheel** | Zoom in/out — the editor's own discrete zoom steps (wheel up = zoom in) |
+| **T** | Toggle swipe (persistent, like the on-screen button) |
+| **+ / −** (row or numpad) | Zoom in / zoom out |
+| **Ctrl+Z** | Undo |
+| **Ctrl+Shift+Z** / **Ctrl+Y** | Redo |
+| **Arrow keys** | Pan the editor view (viewport follows the arrow) |
+
+How it works, and why it is safe:
+
+* `ModernEditorKeybinds` wraps the activity's `Window.Callback`, so key and scroll events are seen
+  before any view. Handlers only *queue* intent; `ModernPlatformHelper.onFrameRendered()` — the same
+  hook that feeds the FPS counter — drains the queue **on the GL thread between frames** and passes
+  each request to the native editor bridge (`host/src/editor_keys.cpp`).
+* The bridge walks the guest's own scene graph (`CCDirector::getRunningScene()` → children, matched
+  against the guest's exported `_ZTV16LevelEditorLayer` / `_ZTV9PlayLayer` vtables) and only acts
+  while a `LevelEditorLayer` with a vptr-validated `EditorUI*` is live. Outside the editor every
+  keybind is a no-op; a wrong layout constant degrades to "feature off", never to a wild pointer.
+* Actions drive the guest binary's **own** `EditorUI` entry points — `zoomIn`/`zoomOut`,
+  `toggleSwipe` (flag + button sprite stay in sync), `undoLastAction`/`redoLastAction`, and a
+  game-layer pan clamped by the game's own `constrainGameLayerPosition` — so behaviour is identical
+  to tapping the on-screen buttons. No screen coordinates are used anywhere, and no guest code is
+  patched.
+* While a text input has focus (level name/description) or the window loses focus, all keys pass
+  through untouched; **Back** is never consumed.
+
+**Verification:** the headless ARM64 runner now asserts the gate on both sides — on `MenuLayer` the
+symbol chain resolves but nothing matches a gameplay/editor layer, inside `PlayLayer` the scene child
+is recognised through `_ZTV9PlayLayer` (proving the vptr scheme) while the editor is *not*, and every
+editor action invoked there no-ops without disturbing GL state.
 
 ---
 
