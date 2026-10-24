@@ -358,17 +358,21 @@ public final class ModernEditorKeybinds implements Window.Callback {
         return mDelegate.onSearchRequested(event);
     }
 
-    public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback,
-            int featureId) {
-        return mDelegate.onWindowStartingActionMode(callback, featureId);
+    @Deprecated
+    public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback) {
+        return false;  // text-selection action modes are unused by the game
+    }
+
+    public android.view.ActionMode onWindowStartingActionMode(
+            android.view.ActionMode.Callback callback, int featureId) {
+        return null;  // null = run the platform default, exactly like Activity's own callback
     }
 
     public boolean onCapturedPointerEvent(MotionEvent event) {
-        return mDelegate.onCapturedPointerEvent(event);
+        return false;
     }
 
     public void onPointerCaptureChanged(boolean hasCapture) {
-        mDelegate.onPointerCaptureChanged(hasCapture);
     }
 
     /** Placeholder when the activity somehow has no window callback of its own. */
@@ -391,8 +395,12 @@ public final class ModernEditorKeybinds implements Window.Callback {
         public void onPanelClosed(int featureId, Menu menu) { }
         public boolean onSearchRequested() { return false; }
         public boolean onSearchRequested(SearchEvent event) { return false; }
-        public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback,
-                int featureId) { return false; }
+        @Deprecated
+        public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback) {
+            return false;
+        }
+        public android.view.ActionMode onWindowStartingActionMode(
+                android.view.ActionMode.Callback callback, int featureId) { return null; }
         public boolean onCapturedPointerEvent(MotionEvent event) { return false; }
         public void onPointerCaptureChanged(boolean hasCapture) { }
     }
