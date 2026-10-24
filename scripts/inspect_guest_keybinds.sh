@@ -14,6 +14,10 @@
 #   * EditorUI::init strb offsets        -> cross-check of the swipe flag init
 set -euo pipefail
 
+# Surface the exact failing statement as a GitHub annotation (job logs are not reachable
+# through the API for this repository).
+trap 'rc=$?; echo "::error title=inspect failed::line $LINENO rc=$rc cmd: $BASH_COMMAND"; exit $rc' ERR
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/tools/analysis/guest_keybind_facts.txt"
 APK102="${GD102_APK:-$ROOT/third_party/Geometry.Dash.ver.1.02.build.4.apk}"
@@ -49,6 +53,7 @@ dump_one() { # $1=label $2=apk
         return 0
     fi
     local so="$dir/lib/armeabi/libgame.so"
+    echo "::notice title=inspect stage::unzipped $label ($so)"
     echo "so_size $(stat -c%s "$so") so_sha256 $(sha256sum "$so" | cut -d' ' -f1)"
 
     "$NM" -D --defined-only "$so" > "$dir/dyn.txt" 2>/dev/null || {
@@ -59,6 +64,7 @@ dump_one() { # $1=label $2=apk
     echo "-- scene-graph / vtable / editor symbols (value + type) --"
     grep -E "(_ZN7cocos2d10CCDirector1[45](sharedDirector|getRunningScene)Ev|_ZN7cocos2d6CCNode11getChildrenEv|_ZNK?7cocos2d7CCArray(5count|13objectAtIndex)E?v?|_ZN7cocos2d6CCNode1[45]getPosition[XY]Ev|_ZN7cocos2d6CCNode11setPositionEff|_ZTV(16LevelEditorLayer|8EditorUI|9PlayLayer|7CCScene)|_ZTI(S|16LevelEditorLayer|8EditorUI)|_ZTS(16LevelEditorLayer|8EditorUI)|toggleSwipe|zoomIn|zoomOut|undoLastAction|redoLastAction|getGameLayer|constrainGameLayerPosition|copyObject|pasteObject)" "$dir/dyn.txt" || true
 
+    echo "::notice title=inspect stage::$label symbols grepped"
     echo "-- CCDirector symbols (scene access is inline; drawScene/mainLoop reveal field offsets) --"
     grep -E "_ZN7cocos2d10CCDirector[0-9]+" "$dir/dyn.txt" | head -60 || true
 
@@ -81,6 +87,7 @@ dump_one() { # $1=label $2=apk
     grep -iE "paste|duplicate|copyobject|copy_objects" "$dir/dyn.txt" || true
 
     # Full disassembly for context greps (kept in temp only).
+    echo "::notice title=inspect stage::disassembling $label"
     "$OBJDUMP" -d "$so" > "$dir/dis.txt"
 
     echo "-- EditorUI::toggleSwipe (full disassembly; strb/ldrb [rX,#imm] reveals the flag offset) --"
