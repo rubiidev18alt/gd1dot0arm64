@@ -54,6 +54,7 @@ JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_native
 JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorUndo(JNIEnv *, jclass, jint);
 JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorRedo(JNIEnv *, jclass, jint);
 JNIEXPORT void JNICALL Java_com_robtopx_geometryjump_ModernPlatformHelper_nativeEditorPan(JNIEnv *, jclass, jint, jint);
+}
 
 
 #define CHECK(cond, ...)                                                       \
