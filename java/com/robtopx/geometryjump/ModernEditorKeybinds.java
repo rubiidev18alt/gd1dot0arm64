@@ -298,6 +298,18 @@ public final class ModernEditorKeybinds implements Window.Callback {
         mDelegate.onWindowFocusChanged(hasFocus);
     }
 
+    public void onContentChanged() {
+        mDelegate.onContentChanged();
+    }
+
+    public void onActionModeStarted(android.view.ActionMode mode) {
+        mDelegate.onActionModeStarted(mode);
+    }
+
+    public void onActionModeFinished(android.view.ActionMode mode) {
+        mDelegate.onActionModeFinished(mode);
+    }
+
     public boolean dispatchKeyShortcutEvent(KeyEvent event) {
         return mDelegate.dispatchKeyShortcutEvent(event);
     }
@@ -358,9 +370,9 @@ public final class ModernEditorKeybinds implements Window.Callback {
         return mDelegate.onSearchRequested(event);
     }
 
-    @Deprecated
-    public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback) {
-        return false;  // text-selection action modes are unused by the game
+    public android.view.ActionMode onWindowStartingActionMode(
+            android.view.ActionMode.Callback callback) {
+        return null;  // null = run the platform default (action modes unused by the game)
     }
 
     public android.view.ActionMode onWindowStartingActionMode(
@@ -390,15 +402,16 @@ public final class ModernEditorKeybinds implements Window.Callback {
         public boolean onMenuItemSelected(int featureId, MenuItem item) { return false; }
         public void onWindowAttributesChanged(WindowManager.LayoutParams attrs) { }
         public void onWindowFocusChanged(boolean hasFocus) { }
+        public void onContentChanged() { }
+        public void onActionModeStarted(android.view.ActionMode mode) { }
+        public void onActionModeFinished(android.view.ActionMode mode) { }
         public void onAttachedToWindow() { }
         public void onDetachedFromWindow() { }
         public void onPanelClosed(int featureId, Menu menu) { }
         public boolean onSearchRequested() { return false; }
         public boolean onSearchRequested(SearchEvent event) { return false; }
-        @Deprecated
-        public boolean onWindowStartingActionMode(android.view.ActionMode.Callback callback) {
-            return false;
-        }
+        public android.view.ActionMode onWindowStartingActionMode(
+                android.view.ActionMode.Callback callback) { return null; }
         public android.view.ActionMode onWindowStartingActionMode(
                 android.view.ActionMode.Callback callback, int featureId) { return null; }
         public boolean onCapturedPointerEvent(MotionEvent event) { return false; }
