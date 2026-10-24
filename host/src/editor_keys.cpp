@@ -21,11 +21,11 @@
 namespace {
 constexpr u32 kVtblDelta = 8;
 constexpr int kSwipeFlagOff = 348;  // toggleSwipe: 0xae<<1, identical in 1.02 and 1.1
+constexpr int kRunningSceneOff = 80;  // CCDirector::m_pRunningScene (inline getter - no symbol)
 constexpr int kUiFieldOff = -1;    // optional fast path; -1 = find EditorUI among the LEL children
 
 struct Syms {
     u32 shared_director = 0;
-    u32 get_running_scene = 0;
     u32 get_children = 0;
     u32 arr_count = 0;
     u32 arr_at = 0;
@@ -56,7 +56,6 @@ u32 find2(const char *a, const char *b) {
 void resolve() {
     g.resolved = true;
     g.shared_director  = find1("_ZN7cocos2d10CCDirector14sharedDirectorEv");
-    g.get_running_scene = find1("_ZN7cocos2d10CCDirector15getRunningSceneEv");
     g.get_children     = find1("_ZN7cocos2d6CCNode11getChildrenEv");
     g.arr_count        = find2("_ZNK7cocos2d7CCArray5countEv", "_ZN7cocos2d7CCArray5countEv");
     g.arr_at           = find1("_ZN7cocos2d7CCArray13objectAtIndexEj");
@@ -78,6 +77,38 @@ void resolve() {
                                "_ZN16LevelEditorLayer14redoLastActionEv");
     g.constrain        = find2("_ZN8EditorUI26constrainGameLayerPositionEv",
                                "_ZN8EditorUI25constrainGameLayerPositionEv");
+}
+
+// Every pointer read out of guest memory must be a mapped guest address before we dereference
+// it: loader::find_by_addr is what makes a wrong layout constant degrade to "feature off"
+// instead of taking the host process down.
+bool mapped(u32 p) { return p && loader::find_by_addr(p) != nullptr; }
+
+// Itanium RTTI: an object's vptr[-1] is its std::type_info*, whose [4] is the name pointer
+// ("7CCScene", "16LevelEditorLayer", ...). RTTI is enabled in both guests (the _ZTI symbols
+// and type names are in the facts dump).
+bool rtti_name_is(u32 obj, const char *expect) {
+    if (!mapped(obj)) return false;
+    u32 vptr = rd<u32>(obj);
+    if (!mapped(vptr)) return false;
+    u32 ti = rd<u32>(vptr - 4);
+    if (!mapped(ti)) return false;
+    u32 namep = rd<u32>(ti + 4);
+    if (!mapped(namep)) return false;
+    for (u32 i = 0; i < 32; i++) {
+        u8 c = rd<u8>(namep + i);
+        if (c == 0) return expect[i] == 0;
+        if (expect[i] == 0 || (u8)expect[i] != c) return false;
+    }
+    return false;
+}
+
+// CCDirector::getRunningScene() is inline in cocos2d-x 2.0/2.1, so read the field directly.
+u32 running_scene(u32 dir) {
+    if (kRunningSceneOff <= 0 || !mapped(dir)) return 0;
+    u32 scene = rd<u32>(dir + (u32)kRunningSceneOff);
+    if (!rtti_name_is(scene, "7CCScene")) return 0;
+    return scene;
 }
 
 struct EditorCtx {
@@ -112,13 +143,12 @@ EditorCtx editor_ctx() {
     if (!g.resolved) resolve();
     EditorCtx ctx;
     if (!constants_ok()) return ctx;
-    if (!g.shared_director || !g.get_running_scene || !g.get_children || !g.arr_count || !g.arr_at ||
-        !g.ztv_lel) {
+    if (!g.shared_director || !g.get_children || !g.arr_count || !g.arr_at || !g.ztv_lel) {
         return ctx;
     }
     u32 dir = (u32)cpu::call32(g.shared_director, {});
     if (!dir) return ctx;
-    u32 scene = (u32)cpu::call32(g.get_running_scene, {dir});
+    u32 scene = running_scene(dir);
     if (!scene) return ctx;
     u32 children = (u32)cpu::call32(g.get_children, {scene});
     if (!children) return ctx;
@@ -157,16 +187,16 @@ void init() { resolve(); }
 int probe_debug() {
     if (!g.resolved) resolve();
     int bits = 0;
-    if (constants_ok() && g.shared_director && g.get_running_scene && g.get_children && g.arr_count &&
-        g.arr_at && g.ztv_lel && g.ztv_play) {
+    if (constants_ok() && kRunningSceneOff > 0 && g.shared_director && g.get_children &&
+        g.arr_count && g.arr_at && g.ztv_lel && g.ztv_play) {
         bits |= 1;
     }
-    if (!g.shared_director || !g.get_running_scene || !g.get_children || !g.arr_count || !g.arr_at) {
+    if (!g.shared_director || !g.get_children || !g.arr_count || !g.arr_at) {
         return bits;
     }
     u32 dir = (u32)cpu::call32(g.shared_director, {});
     if (!dir) return bits;
-    u32 scene = (u32)cpu::call32(g.get_running_scene, {dir});
+    u32 scene = running_scene(dir);
     if (!scene) return bits;
     u32 children = (u32)cpu::call32(g.get_children, {scene});
     if (!children) return bits;
